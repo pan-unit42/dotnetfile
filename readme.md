@@ -14,9 +14,6 @@ To install `dotnetfile` as a module, please use the provided `setup.py` file. Th
 
 Now, you're all set to use `dotnetfile`. :raised_hands:
 
-## Documentation
-The full and extensive documentation can be found at https://pan-unit42.github.io/dotnetfile/
-
 ## Usage
 To use `dotnetfile`, all you have to do is to import the module and create an instance of the class `DotNetPE` with the .NET assembly path as a parameter. A minimal example that prints out the number of streams of an assembly is shown below:
 ```python #
@@ -33,7 +30,11 @@ dotnet_file = DotNetPE(dotnet_file_path)
 print(f'Number of streams: {dotnet_file.get_number_of_streams()}')
 ```
 You are invited to explore the example script ["dotnetfile_dump.py"](https://github.com/pan-unit42/dotnetfile/blob/main/examples/dotnetfile_dump.py)
-[More about the usage can be found on the documentation pages](https://pan-unit42.github.io/dotnetfile/get_started/usage/). 
+
+More about the usage can be found on the [documentation pages](https://pan-unit42.github.io/dotnetfile/get_started/usage/). 
+
+## Documentation
+The full and extensive documentation can be found at https://pan-unit42.github.io/dotnetfile/
 
 ## Contributors
 This project was started in 2016 with the development of the parser library for internal use at Palo Alto Networks. It was improved and extended from 2021-2022 with the interface library and open-sourced in 2022. The following people from the Malware & Countermeasures Unit (MCU) were involved:
@@ -42,9 +43,9 @@ This project was started in 2016 with the development of the parser library for 
 - Yaron Samuel (parser library) :black_small_square: [@yaron_samuel](https://twitter.com/yaron_samuel)
 - Dominik Reichel (parser and interface libraries) :black_small_square: [@TheEnergyStory](https://twitter.com/TheEnergyStory)
 
-- This project is a work in progress, meaning we'll continuously expand it with new functionality.
-If you find any issues or have any suggestions, please report them to the Github project page.
+This project is a work in progress.  If you find any issues or have any suggestions, please report them to the Github project page.
 
 ## Credits
 `dotnetfile` is heavily based on the [`.NET spec`](https://www.ecma-international.org/wp-content/uploads/ECMA-335_6th_edition_june_2012.pdf)
-`GDATA` deserve full credit for the `TypeRef Hash` idea.
+
+`GDATA` team deserves full credit for the `TypeRef Hash` idea.
