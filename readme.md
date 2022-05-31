@@ -46,6 +46,6 @@ This project was started in 2016 with the development of the parser library for 
 This project is a work in progress.  If you find any issues or have any suggestions, please report them to the Github project page.
 
 ## Credits
-`dotnetfile` is heavily based on the [`.NET spec`](https://www.ecma-international.org/wp-content/uploads/ECMA-335_6th_edition_june_2012.pdf)
+`dotnetfile` is heavily based on the [`.NET spec`](https://www.ecma-international.org/wp-content/uploads/ECMA-335_6th_edition_june_2012.pdf).
 
 `GDATA` team deserves full credit for the `TypeRef Hash` idea.
