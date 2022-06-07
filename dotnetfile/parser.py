@@ -62,8 +62,12 @@ class DotNetPEParser(PE):
     """
     Handy reference: https://www.ntcore.com/files/dotnetformat.htm
     """
-    def __init__(self, path, parse=True, log_level=logging.INFO, *args, **kwargs):
-        super(DotNetPEParser, self).__init__(path, *args, **kwargs)
+    def __init__(self, file_ref, parse=True, log_level=logging.INFO, *args, **kwargs):
+
+        if isinstance(file_ref, str):
+            super(DotNetPEParser, self).__init__(name=file_ref, *args, **kwargs)
+        elif isinstance(file_ref, bytes):
+            super(DotNetPEParser, self).__init__(data=file_ref, *args, **kwargs)
 
         self.dotnet_anti_metadata = {
             'data_directory_hidden': False,
@@ -160,7 +164,7 @@ class DotNetPEParser(PE):
 
         return result
 
-    def is_metadata_header_complete_and_valid(self, file_path: str) -> bool:
+    def is_metadata_header_complete_and_valid(self, file_ref: str | bytes) -> bool:
         """
         Check if the metadata data is complete according to the values in the Cor20 header
         """
@@ -184,7 +188,14 @@ class DotNetPEParser(PE):
         # MajorRuntimeVersion (2 bytes), MinorRuntimeVersion (2 bytes) and Metadata.VirtualAddress (4 bytes) fields
         metadata_size = self.get_dword_at_rva(rva=dotnet_header_rva + 4 + 2 + 2 + 4)
         metadata_offset = self.get_offset_from_rva(metadata_virtual_address)
-        file_size = os.path.getsize(file_path)
+        
+        file_size = 0
+        
+        if isinstance(file_ref, str):
+            if os.path.isfile(file_ref):
+                file_size = os.path.getsize(file_ref)
+        elif isinstance(file_ref, bytes):
+            file_size = len(file_ref)
 
         # Check if metadata is incomplete or the metadata signature is not at the beginning of the data
         if metadata_offset + metadata_size > file_size or self.get_data(metadata_virtual_address, 4) != b'BSJB':
