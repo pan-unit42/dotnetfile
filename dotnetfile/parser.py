@@ -79,7 +79,7 @@ class DotNetPEParser(PE):
         if not self.is_dotnet_file():
             raise CLRFormatError('File is not a .NET assembly.')
 
-        if not self.is_metadata_header_complete_and_valid(path):
+        if not self.is_metadata_header_complete_and_valid(file_ref):
             raise CLRFormatError('CLR header of file is most likely corrupt.')
 
         self.logger = get_logger('extended_pe_logger', level=log_level)
