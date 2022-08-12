@@ -280,6 +280,17 @@ class DotNetPE(DotNetPEParser):
 
         return result
 
+    def get_user_string(self, string_address: int) -> str:
+        """
+        Get string from the #US (user-string) stream lookup dictionary
+        """
+        try:
+            return self.dotnet_user_string_lookup[string_address].string_representation
+        except KeyError as err:
+            raise ValueError(
+                f'There is no user string that starts at 0x{string_address:x}.'
+            ) from err
+
     @staticmethod
     def get_hash(hash_type: Type.Hash, string_list: List) -> str:
         """

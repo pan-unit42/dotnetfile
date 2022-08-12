@@ -101,6 +101,8 @@ class DotNetPEParser(PE):
 
         # mapping of offsets inside "#Strings" to string at that offset
         self.dotnet_string_lookup: Dict[int, FileLocation] = {}
+        # mapping of offsets inside "#US" to string at that offset
+        self.dotnet_user_string_lookup: Dict[int, FileLocation] = {}
         # mapping of offsets inside "#Blob" to string at that offset
         self.dotnet_blob_lookup: Dict[int, FileLocation] = {}
         # list of GUIDs inside "#GUID"
@@ -590,6 +592,8 @@ class DotNetPEParser(PE):
                 current_string_name = get_reasonable_display_string_for_bytes(current_string)
                 current_string_location.string_representation = current_string_name
 
+                self.dotnet_user_string_lookup[current_string_rva - stream.address] = \
+                    current_string_location
                 self.user_string_stream_strings.append(current_string_location)
 
             current_string_rva += current_string_size
