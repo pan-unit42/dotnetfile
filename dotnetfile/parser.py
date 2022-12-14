@@ -29,7 +29,8 @@ import logging
 from struct import unpack
 from math import log, floor
 from pefile import PE, DIRECTORY_ENTRY, PEFormatError
-from typing import List, Dict, Tuple, Any
+from typing import List, Dict, Tuple, Any, Union
+from pathlib import PurePath
 
 from .util import read_null_terminated_byte_string, get_reasonable_display_string_for_bytes, FileLocation, \
     read_7bit_encoded_uint32, read_7bit_encoded_int32
@@ -37,6 +38,9 @@ from .logger import get_logger
 from .structures import DOTNET_CLR_HEADER, DOTNET_METADATA_HEADER, DOTNET_STREAM_HEADER, DOTNET_METADATA_STREAM_HEADER
 from .metadata_rows import get_metadata_row_class_for_table
 from .constants import TABLE_ROW_VARIABLE_LENGTH_FIELDS, MAX_DOTNET_STRING_LENGTH, BLOB_SIGNATURES, RESOURCE_TYPE_CODES
+
+
+PathLike = Union[str, bytes, os.PathLike, PurePath]
 
 
 class CLRFormatError(Exception):
@@ -64,10 +68,10 @@ class DotNetPEParser(PE):
     """
     def __init__(self, file_ref, parse=True, log_level=logging.INFO, *args, **kwargs):
 
-        if isinstance(file_ref, str):
-            super(DotNetPEParser, self).__init__(name=file_ref, *args, **kwargs)
-        elif isinstance(file_ref, bytes):
-            super(DotNetPEParser, self).__init__(data=file_ref, *args, **kwargs)
+        if isinstance(file_ref, bytes):
+            super().__init__(data=file_ref, *args, **kwargs)
+        else:
+            super().__init__(name=file_ref, *args, **kwargs)
 
         self.dotnet_anti_metadata = {
             'data_directory_hidden': False,
@@ -188,14 +192,12 @@ class DotNetPEParser(PE):
         # MajorRuntimeVersion (2 bytes), MinorRuntimeVersion (2 bytes) and Metadata.VirtualAddress (4 bytes) fields
         metadata_size = self.get_dword_at_rva(rva=dotnet_header_rva + 4 + 2 + 2 + 4)
         metadata_offset = self.get_offset_from_rva(metadata_virtual_address)
-        
+
         file_size = 0
-        
-        if isinstance(file_ref, str):
-            if os.path.isfile(file_ref):
-                file_size = os.path.getsize(file_ref)
-        elif isinstance(file_ref, bytes):
+        if isinstance(file_ref, bytes):
             file_size = len(file_ref)
+        elif os.path.isfile(file_ref):
+            file_size = os.path.getsize(file_ref)
 
         # Check if metadata is incomplete or the metadata signature is not at the beginning of the data
         if metadata_offset + metadata_size > file_size or self.get_data(metadata_virtual_address, 4) != b'BSJB':
