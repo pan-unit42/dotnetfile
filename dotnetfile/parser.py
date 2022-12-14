@@ -66,7 +66,7 @@ class DotNetPEParser(PE):
     """
     Handy reference: https://www.ntcore.com/files/dotnetformat.htm
     """
-    def __init__(self, file_ref, parse=True, log_level=logging.INFO, *args, **kwargs):
+    def __init__(self, file_ref: PathLike, parse: bool = True, log_level: int = logging.INFO, *args, **kwargs):
 
         if isinstance(file_ref, bytes):
             super().__init__(data=file_ref, *args, **kwargs)
@@ -168,7 +168,7 @@ class DotNetPEParser(PE):
 
         return result
 
-    def is_metadata_header_complete_and_valid(self, file_ref: str | bytes) -> bool:
+    def is_metadata_header_complete_and_valid(self, file_ref: PathLike) -> bool:
         """
         Check if the metadata data is complete according to the values in the Cor20 header
         """
