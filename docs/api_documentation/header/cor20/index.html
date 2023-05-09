@@ -236,7 +236,7 @@
     </h3>
 </doc-anchor-target>
 <div class="codeblock-wrapper"><doc-codeblock>
-<pre class="language-python"><code v-pre class="language-python">Cor20Header.entrypoint_exists() -&gt; bool</code></pre>
+<pre class="language-python"><code v-pre class="language-python">Cor20Header.entry_point_exists() -&gt; bool</code></pre>
 </doc-codeblock></div>
 <p>The <code v-pre>Cor20</code> header has a field named <code v-pre>EntryPointToken</code>. This field contains the token of the managed entry point if not <code v-pre>0</code>. The token encodes information in which row of the <code v-pre>MethodDef</code> table the entry point is located.</p>
 <div class="flex mb-6">
@@ -269,7 +269,7 @@ from dotnetfile import DotNetPE
 dotnet_file = DotNetPE('/Users/&lt;username&gt;/my_dotnet_assembly.exe')
 
 # Print out if .NET assembly has a managed entry point
-print(f'Has managed entry point: {dotnet_file.Cor20Header.entrypoint_exists()}')</code></pre>
+print(f'Has managed entry point: {dotnet_file.Cor20Header.entry_point_exists()}')</code></pre>
 </doc-codeblock></div>
 <hr />
 <doc-anchor-target id="get-entry-point-information">
