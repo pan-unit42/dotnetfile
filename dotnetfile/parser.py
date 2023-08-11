@@ -70,7 +70,7 @@ class DotNetPEParser(PE):
         elif isinstance(file_ref, bytes):
             super(DotNetPEParser, self).__init__(data=file_ref, *args, **kwargs)
         elif isinstance(file_ref, pathlib.Path):
-            super(DotNetPEParser, self).__init__(data=str(file_ref), *args, **kwargs)
+            super(DotNetPEParser, self).__init__(name=str(file_ref), *args, **kwargs)
 
         self.dotnet_anti_metadata = {
             'data_directory_hidden': False,
