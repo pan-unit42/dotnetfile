@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import os
 import binascii
+import pathlib
 import struct
 import logging
 from struct import unpack
@@ -68,6 +69,8 @@ class DotNetPEParser(PE):
             super(DotNetPEParser, self).__init__(name=file_ref, *args, **kwargs)
         elif isinstance(file_ref, bytes):
             super(DotNetPEParser, self).__init__(data=file_ref, *args, **kwargs)
+        elif isinstance(file_ref, pathlib.Path):
+            super(DotNetPEParser, self).__init__(data=str(file_ref), *args, **kwargs)
 
         self.dotnet_anti_metadata = {
             'data_directory_hidden': False,
@@ -188,9 +191,9 @@ class DotNetPEParser(PE):
         # MajorRuntimeVersion (2 bytes), MinorRuntimeVersion (2 bytes) and Metadata.VirtualAddress (4 bytes) fields
         metadata_size = self.get_dword_at_rva(rva=dotnet_header_rva + 4 + 2 + 2 + 4)
         metadata_offset = self.get_offset_from_rva(metadata_virtual_address)
-        
+
         file_size = 0
-        
+
         if isinstance(file_ref, str):
             if os.path.isfile(file_ref):
                 file_size = os.path.getsize(file_ref)
