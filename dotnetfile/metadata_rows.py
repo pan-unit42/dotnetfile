@@ -1,7 +1,7 @@
 """
 Part of dotnetfile
 
-Copyright (c) 2016, 2021-2022 - Bob Jung, Yaron Samuel, Dominik Reichel
+Copyright (c) 2016, 2021-2023 - Bob Jung, Yaron Samuel, Dominik Reichel
 """
 
 import binascii
@@ -38,8 +38,6 @@ def get_blob_location_for_offset(pe, offset: int):
 
 
 def get_guid_location_for_offset(pe, offset: int):
-    """
-    """
     # I'm just going to go with 4 bytes for now...
     guid_location_size = 4
     guid_stream = pe.dotnet_stream_lookup.get(b'#GUID', None)

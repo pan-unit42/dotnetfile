@@ -1,7 +1,7 @@
 """
 Part of dotnetfile
 
-Copyright (c) 2016, 2021-2022 - Bob Jung, Yaron Samuel, Dominik Reichel
+Copyright (c) 2016, 2021-2023 - Bob Jung, Yaron Samuel, Dominik Reichel
 """
 
 from __future__ import annotations
@@ -51,7 +51,6 @@ def convert_to_unicode(byte_string: bytes) -> Optional[str]:
                 UTF8_ENCODINGS.insert(2, encoding)
 
             return unicode_string
-
         except UnicodeDecodeError:
             pass
 

@@ -1,5 +1,5 @@
 """
-Author: Dominik Reichel - Palo Alto Networks (2021-2022)
+Author: Dominik Reichel - Palo Alto Networks (2021-2023)
 
 dotnetfile - Interface library for the CLR header parser library for Windows .NET assemblies.
 
@@ -17,16 +17,27 @@ Thanks to the authors of the following tools and libraries:
     - ILSpy
 """
 
+from struct import unpack
 from dataclasses import dataclass
 from hashlib import md5, sha1, sha256
 from enum import Enum, IntEnum, IntFlag, auto
-from typing import List, Dict, Optional, Union
+from typing import List, Dict, Optional, Union, Tuple
 
 from .parser import DotNetPEParser
-from .constants import METADATA_TABLE_INDEXES
+from .constants import METADATA_TABLE_INDEXES, FAST_LOAD_TABLES_DEFAULT
 
 
 METADATA_TABLES = {}
+FAST_LOAD_OPTIONS = {
+    'header_only',
+    'normal',
+    'normal_resources'
+}
+FULL_LOAD_OPTIONS = {
+    'normal',
+    'normal_resources',
+    'full'
+}
 
 
 def metatable(cls):
@@ -134,7 +145,7 @@ class Struct:
     class TypesMethods:
         Type: str
         Namespace: str
-        Methods: List["Methods"]
+        Methods: List['Methods']
         Flags: int
 
     @dataclass
@@ -142,6 +153,10 @@ class Struct:
         Name: str
         Signature: Dict
         Flags: int
+        RVA: int
+        HeaderSize: int
+        CodeSize: int
+        RawBytes: bytes
 
     @dataclass
     class EntryPoint:
@@ -159,16 +174,95 @@ class Struct:
 
 
 class DotNetPE(DotNetPEParser):
-    def __init__(self, path):
-        super().__init__(path)
+    def __init__(self, path: str, fast_load: str = '', fast_load_tables: list = FAST_LOAD_TABLES_DEFAULT):
+        # Fast load options:
+        # header_only      - Load only header data and skip metadata tables
+        # normal           - Load header data and only metadata tables necessary for the interface library.
+        #                    Optionally, you can choose your own list of metadata tables to be loaded in
+        #                    fast_load_tables. However, it's advised not to change the default list unless
+        #                    you know what you are doing.
+        # normal_resources - Load header data, only metadata tables necessary for interface library and resources.
+        #                    Optionally, you can also choose your own list of metadata tables.
+        #
+        # By default, when no fast load option is used, all data is loaded (can be slow for big files).
+        if fast_load:
+            if not self._is_fast_load_valid(fast_load):
+                raise Exception(f'Fast load option "{fast_load}" does not exist.')
+        super().__init__(path, fast_load, fast_load_tables)
         self.AntiMetadataAnalysis = AntiMetadataAnalysis(self)
         self.Cor20Header = Cor20Header(self)
         self.Type = Type()
+        self._initialize_metadata_table_objects()
 
+    @staticmethod
+    def _is_fast_load_valid(option: str) -> bool:
+        result = False
+
+        if option in FAST_LOAD_OPTIONS:
+            result = True
+
+        return result
+
+    def _initialize_metadata_table_objects(self) -> None:
         for table_name, table_obj in METADATA_TABLES.items():
             if self.metadata_table_exists(table_name):
                 table_instance = table_obj(self)
                 setattr(self, table_name, table_instance)
+
+    def full_load_data(self, option: str = '') -> bool:
+        # Full load options:
+        # normal           - Load header data and only metadata tables necessary for the interface library.
+        #                    Possible preceding fast load option: header_only
+        # normal_resources - Depending on the previous fast load option(s), load metadata tables necessary for
+        #                    the interface library and resources or only the resources.
+        #                    Possible preceding fast load options: header_only, normal
+        # full             - Depending on the previous fast load option(s), load all or the remaining metadata
+        #                    tables necessary for the interface library and the resources.
+        #                    Possible preceding fast load options: header_only, normal, normal_resource
+        result = False
+
+        if option not in FULL_LOAD_OPTIONS:
+            self.logger.info(f'Full load option "{option}" does not exist.')
+            return result
+
+        if option == 'normal' and self.fast_load == 'header_only':
+            self.parse_dotnet_streams()
+            self._initialize_metadata_table_objects()
+            self.fast_load = 'normal'
+            result = True
+        elif option == 'normal_resources' and self.fast_load == 'header_only':
+            self.parse_dotnet_streams()
+            self.parse_dotnet_resources()
+            self._initialize_metadata_table_objects()
+            self.fast_load = 'normal_resources'
+            result = True
+        elif option == 'full' and self.fast_load == 'header_only':
+            self.fast_load = None
+            self.parse_dotnet_streams()
+            self.parse_dotnet_resources()
+            self._initialize_metadata_table_objects()
+            result = True
+        elif option == 'normal_resources' and self.fast_load == 'normal':
+            self.parse_dotnet_resources()
+            self.fast_load = 'normal_resources'
+            result = True
+        elif option == 'full' and self.fast_load == 'normal':
+            self.parse_metadata_tables(self.full_load_tables)
+            self.parse_non_standard_strings()
+            self.parse_dotnet_resources()
+            self._initialize_metadata_table_objects()
+            self.fast_load = None
+            result = True
+        elif option == 'full' and self.fast_load == 'normal_resources':
+            self.parse_metadata_tables(self.full_load_tables)
+            self.parse_non_standard_strings()
+            self._initialize_metadata_table_objects()
+            self.fast_load = None
+            result = True
+        else:
+            self.logger.info(f'Full load option "{option}" does not work with fast load option "{self.fast_load}".')
+
+        return result
 
     def metadata_table_exists(self, name: str) -> bool:
         """
@@ -271,12 +365,35 @@ class DotNetPE(DotNetPEParser):
 
     def get_string(self, string_address: int) -> str:
         """
-        Get string from the #Strings normal stream lookup dictionary or the overlap strings list
+        Get string from the #Strings stream lookup dictionary or the overlap strings list
         """
+        string = self.dotnet_string_lookup.get(string_address, None)
+
+        # If string index not present in normal string lookup dictionary, try to get it from overlap
+        # string lookup dictionary
+        if string is None:
+            string = self.dotnet_overlap_string_lookup.get(string_address, None)
+
+            # If that fails too, string index is bogus or points to non-existing string as done
+            # by some obfuscators.
+            if string is None:
+                self.logger.debug(f'Failed to get string with address "{string_address}".')
+                return ''
+
+        return string.string_representation
+
+    def get_user_string(self, string_address: int) -> str:
+        """
+        Get string from the #US (user-string) stream lookup dictionary
+        """
+        result = ''
+
         try:
-            result = self.dotnet_string_lookup[string_address].string_representation
+            result = self.dotnet_user_string_lookup[string_address].string_representation
         except KeyError:
-            result = self.dotnet_overlap_string_lookup[string_address].string_representation
+            self.logger.debug(f'There is no user string that starts at 0x{string_address:x}.')
+        except Exception:
+            self.logger.debug(f'Failed to get user string with address "{string_address}".')
 
         return result
 
@@ -327,7 +444,7 @@ class DotNetPE(DotNetPEParser):
         """
         result = []
 
-        for string in self.user_string_stream_strings:
+        for string in self.dotnet_user_string_lookup.values():
             result.append(string.string_representation)
 
         return result
@@ -374,21 +491,21 @@ class AntiMetadataAnalysis:
         self.dotnetpe = dotnet_obj
 
     @property
-    def is_dotnet_data_directory_hidden(self):
+    def is_dotnet_data_directory_hidden(self) -> bool:
         """
         .NET data directory in the PE header is hidden.
         """
         return self.dotnetpe.dotnet_anti_metadata['data_directory_hidden']
 
     @property
-    def has_metadata_table_extra_data(self):
+    def has_metadata_table_extra_data(self) -> bool:
         """
         Tables header contains 4 bytes of extra data.
         """
         return self.dotnetpe.dotnet_anti_metadata['metadata_table_has_extra_data']
 
     @property
-    def has_self_referenced_typeref_entries(self):
+    def has_self_referenced_typeref_entries(self) -> bool:
         """
         TypeRef table contains entries that reference each other.
         """
@@ -416,7 +533,7 @@ class AntiMetadataAnalysis:
         return result
 
     @property
-    def has_invalid_typeref_entries(self):
+    def has_invalid_typeref_entries(self) -> bool:
         """
         TypeRef table contains invalid entries.
         """
@@ -441,14 +558,14 @@ class AntiMetadataAnalysis:
         return result
 
     @property
-    def has_fake_data_streams(self):
+    def has_fake_data_streams(self) -> bool:
         """
         CLR header contains fake data streams.
         """
         return self.dotnetpe.dotnet_anti_metadata['has_fake_data_streams']
 
     @property
-    def module_table_has_multiple_rows(self):
+    def module_table_has_multiple_rows(self) -> bool:
         """
         Module table has more than one row.
         """
@@ -461,7 +578,7 @@ class AntiMetadataAnalysis:
         return result
 
     @property
-    def assembly_table_has_multiple_rows(self):
+    def assembly_table_has_multiple_rows(self) -> bool:
         """
         Assembly table has more than one row.
         """
@@ -474,11 +591,44 @@ class AntiMetadataAnalysis:
         return result
 
     @property
-    def has_invalid_strings_stream_entries(self):
+    def has_invalid_strings_stream_entries(self) -> bool:
         """
         #Strings stream contains invalid entries.
         """
         return self.dotnetpe.dotnet_anti_metadata['has_invalid_strings_stream_entries']
+
+    @property
+    def has_invalid_methoddef_entries(self) -> bool:
+        """
+        MethodDef table contains invalid entries.
+        """
+        result = False
+
+        if not self.dotnetpe.metadata_table_exists('MethodDef'):
+            self.dotnetpe.logger.debug('File does not have a MethodDef table.')
+            return result
+
+        for table_row in self.dotnetpe.metadata_tables_lookup['MethodDef'].table_rows:
+            if table_row.RVA.value == table_row.Flags.value == table_row.Name.value == table_row.Signature.value == 0:
+                result = True
+                break
+
+        return result
+
+    @property
+    def has_max_len_exceeding_strings(self) -> bool:
+        """
+        #Strings stream contains string(s) that exceed(s) maximum length defined in Roslyn compiler.
+        """
+        return self.dotnetpe.dotnet_anti_metadata['has_max_len_exceeding_strings']
+
+    @property
+    def has_mixed_case_stream_names(self) -> bool:
+        """
+        Stream names are made of mixed case characters (e.g. #strinGs, #BloB, ...) instead of the
+        officially used names (#Strings, #Blob, ...)
+        """
+        return self.dotnetpe.dotnet_anti_metadata['has_mixed_case_stream_names']
 
 
 class Cor20Header:
@@ -575,22 +725,23 @@ class TypeRef:
     def get_typeref_hash(self, hash_type: Type.Hash = Type.Hash.SHA256, skip_self_referenced_entries: bool = True,
                          strings_sorted: bool = False) -> str:
         """
-        TypeRefHash: Get hash of type and their corresponding resolution scope names.
+        Get hash of type and their corresponding resolution scope names.
 
-        In contrast to the original TypeRefHash implementation from GData, we use the resolution scope names as they're
-        always present compared to the namespace names. Additionally, you can skip types that reference each other as
+        In contrast to the TypeRefHash implementation from GData, we use the resolution scope names instead of
+        the namespace names as they're always present. Additionally, you can skip types that reference each other as
         added by some .NET protectors. Furthermore, the list of scope and type names can be sorted alphabetically after
-        the type names before being hashed. Strings are also used case-sensitive.
+        the type names before being hashed. Strings are also used case-sensitive and the resolution scope <-> type ref
+        name pairs are also concatenated with a dash.
 
         Options:
             - Type.Hash.MD5, Type.Hash.SHA1, Type.Hash.SHA256
             - Skip types that reference each other (added by some .NET protectors)
             - Strings unsorted or sorted (after the type names)
 
-        Source:
+        GData TypeRef hash:
             https://www.gdatasoftware.com/blog/2020/06/36164-introducing-the-typerefhash-trh
         """
-        types_scopes = []
+        scopes_types = []
         for current_row_index, table_row in enumerate(self.dotnetpe.metadata_tables_lookup['TypeRef'].table_rows):
             type_string_address = table_row.string_stream_references['TypeName']
             type_name = self.dotnetpe.get_string(type_string_address)
@@ -621,12 +772,17 @@ class TypeRef:
                 resolution_scope_index].string_stream_references[name]
             resolution_scope_name = self.dotnetpe.get_string(resolution_scope_string_address)
 
-            types_scopes.append(f'{resolution_scope_name}-{type_name}')
+            scopes_types.append((resolution_scope_name, type_name))
 
         if strings_sorted:
-            types_scopes.sort(key=lambda x: x.split('-')[1])
+            def key(x):
+                return x[0].lower(), x[1].lower()
 
-        return self.dotnetpe.get_hash(hash_type, types_scopes)
+            scopes_types = sorted(scopes_types, key=key)
+
+        scopes_types = [x[0] + '-' + x[1] for x in scopes_types]
+
+        return self.dotnetpe.get_hash(hash_type, scopes_types)
 
 
 # Table 2
@@ -685,6 +841,74 @@ class TypeDef:
 
         return result
 
+    def _get_method_header_information(self, reader_pos: int) -> Tuple[int, int, int, int]:
+        header_size, code_size, flags = 0, 0, 0
+
+        header_byte = unpack('B', self.dotnetpe.get_data(reader_pos, 1))[0]
+        reader_pos += 1
+        header_flag = header_byte & 7
+
+        if header_flag == 2 or header_flag == 6:
+            header_size = 1
+            code_size = header_byte >> 2
+        elif header_flag == 3:
+            flags = (unpack('B', self.dotnetpe.get_data(reader_pos, 1))[0] << 8) | header_byte
+            reader_pos += 3
+            header_size = flags >> 12
+            code_size = unpack('I', self.dotnetpe.get_data(reader_pos, 4))[0]
+            reader_pos += 8
+
+            reader_pos = reader_pos - 12 + header_size * 4
+
+        if header_size < 3:
+            flags &= 0xFFF7
+
+        header_size *= 4
+
+        return header_size, code_size, flags, reader_pos
+
+    def _is_reader_position_valid(self, position: int) -> bool:
+        result = True
+
+        if position > self.dotnetpe.file_size:
+            self.dotnetpe.logger.debug(f'Method reader at position "{position}" exceeds file size.')
+            result = False
+
+        return result
+
+    def get_method_data(self, rva: int) -> Tuple[int, int, bytes]:
+        reader_position = rva
+        method_header_size, method_code_size, method_flags, reader_position = \
+            self._get_method_header_information(reader_position)
+
+        if method_header_size == method_code_size == method_flags == 0:
+            return 0, 0, bytes()
+
+        reader_position += method_code_size
+        if not self._is_reader_position_valid(reader_position):
+            return 0, 0, bytes()
+
+        if method_flags & 8 != 0:
+            reader_position = (reader_position + 3) & ~3
+            b = unpack('B', self.dotnetpe.get_data(reader_position, 1))[0]
+            reader_position += 1
+
+            if (b & 0x3F) != 1:
+                reader_position -= 1
+            elif (b & 0x40) != 0:
+                reader_position -= 1
+                num = ((unpack('I', self.dotnetpe.get_data(reader_position, 4))[0] >> 8) // 24)
+                reader_position = reader_position + 4 + num * 24
+            else:
+                num = unpack('B', self.dotnetpe.get_data(reader_position, 1))[0] // 12
+                reader_position = reader_position + 1 + 2 + num * 12
+
+        method_body_length = reader_position - rva
+
+        method_data = self.dotnetpe.get_data(rva, method_body_length)
+
+        return method_header_size, method_code_size, method_data
+
     def get_type_names_with_methods(self) -> List[Struct.TypesMethods]:
         """
         Get type names with all corresponding methods.
@@ -723,11 +947,27 @@ class TypeDef:
                 method_name = self.dotnetpe.get_string(method_string_address)
 
                 method_signature_index = methoddef_table_rows[j].Signature.value
-                method_signature = self.dotnetpe.dotnet_blob_lookup[method_signature_index]
+                try:
+                    method_signature = self.dotnetpe.dotnet_blob_lookup[method_signature_index].string_representation
+                except KeyError:
+                    self.dotnetpe.logger.debug(f'Method signature index "{method_signature_index}" not available in '
+                                               f'#Blob stream lookup table.')
+                    method_signature = {}
 
                 method_flags = methoddef_table_rows[j].Flags.value
 
-                methods.append(Struct.Methods(method_name, method_signature.string_representation, method_flags))
+                method_rva = methoddef_table_rows[j].RVA.value
+
+                if method_rva == 0:
+                    self.dotnetpe.logger.debug(f'Method RVA value is 0, skip getting method data. '
+                                               f'Flags: {methoddef_table_rows[j].Flags.value}, '
+                                               f'ImplFlags: {methoddef_table_rows[j].ImplFlags.value}')
+                    method_header_size, method_code_size, method_data = 0, 0, bytes()
+                else:
+                    method_header_size, method_code_size, method_data = self.get_method_data(method_rva)
+
+                methods.append(Struct.Methods(method_name, method_signature, method_flags, method_rva,
+                                              method_header_size, method_code_size, method_data))
 
             result.append(Struct.TypesMethods(type_name, namespace_name, methods, type_flags))
             current_method_index += method_count
@@ -1015,52 +1255,6 @@ class ImplMap:
                     table_row.table_references['MemberForwarded'][1] - 1)
 
             result.append(function_name)
-
-        return result
-
-    def get_platform_invoke_information(self, with_mapping_flags: bool = False) -> List[str]:
-        result = []
-
-        if not self.dotnetpe.metadata_table_exists('ModuleRef'):
-            self.dotnetpe.logger.debug('Cross-reference error: File does not have a ModuleRef table.')
-            return result
-
-        for table_row in self.dotnetpe.metadata_tables_lookup['ImplMap'].table_rows:
-            function_string_address = table_row.string_stream_references['ImportName']
-            function_name = self.dotnetpe.get_string(function_string_address)
-
-            # Handle mixed assembly ImplMap entries by getting the function name from the MethodDef table and the
-            # library name from the PE header
-            module_name = ''
-            if not function_name:
-                function_name = self._get_function_name_from_methoddef_table(
-                    table_row.table_references['MemberForwarded'][1] - 1)
-
-                # Handle native images created by Ngen as they don't have an import address table anymore
-                if hasattr(self.dotnetpe, 'DIRECTORY_ENTRY_IMPORT'):
-                    for dll_import in self.dotnetpe.DIRECTORY_ENTRY_IMPORT:
-                        for function_import in dll_import.imports:
-                            if function_import.name:
-                                if function_import.name.decode() == function_name:
-                                    module_name = dll_import.dll.decode()
-                                    break
-            else:
-                import_scope = table_row.ImportScope.value
-                module_string_address = self.dotnetpe.metadata_tables_lookup['ModuleRef'].table_rows[
-                    import_scope - 1].string_stream_references['Name']
-                module_name = self.dotnetpe.get_string(module_string_address)
-
-            function_name = function_name.lower()
-            module_name = module_name.lower()
-
-            if module_name.endswith('.dll'):
-                module_name = module_name[:-4]
-
-            if with_mapping_flags:
-                mapping_flags = table_row.MappingFlags.value
-                result.append(f'{module_name}.{function_name}.{mapping_flags}')
-            else:
-                result.append(f'{module_name}.{function_name}')
 
         return result
 

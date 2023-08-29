@@ -1,7 +1,7 @@
 """
 Original author:        Bob Jung - Palo Alto Networks (2016)
 Modified/Expanded by:   Yaron Samuel - Palo Alto Networks (2021-2022),
-                        Dominik Reichel - Palo Alto Networks (2021-2022)
+                        Dominik Reichel - Palo Alto Networks (2021-2023)
 
 dotnetfile - CLR header parsing library for Windows .NET PE files.
 
@@ -29,14 +29,18 @@ import logging
 from struct import unpack
 from math import log, floor
 from pefile import PE, DIRECTORY_ENTRY, PEFormatError
-from typing import List, Dict, Tuple, Any
+from typing import List, Dict, Tuple, Any, Set, Union, Optional, Type
+from pathlib import PurePath
 
 from .util import read_null_terminated_byte_string, get_reasonable_display_string_for_bytes, FileLocation, \
     read_7bit_encoded_uint32, read_7bit_encoded_int32
 from .logger import get_logger
 from .structures import DOTNET_CLR_HEADER, DOTNET_METADATA_HEADER, DOTNET_STREAM_HEADER, DOTNET_METADATA_STREAM_HEADER
-from .metadata_rows import get_metadata_row_class_for_table
+from .metadata_rows import get_metadata_row_class_for_table, MODULE_TABLE_ROW
 from .constants import TABLE_ROW_VARIABLE_LENGTH_FIELDS, MAX_DOTNET_STRING_LENGTH, BLOB_SIGNATURES, RESOURCE_TYPE_CODES
+
+
+PathLike = Union[str, bytes, os.PathLike, PurePath]
 
 
 class CLRFormatError(Exception):
@@ -48,10 +52,7 @@ class CLRFormatError(Exception):
 
 
 class MetadataTable(object):
-    """
-    This is just a memory location that has a list of table rows
-    """
-    def __init__(self, table_rows, addr: int = None, string_representation: str = None, size: int = None):
+    def __init__(self, table_rows: list, addr: int = None, string_representation: str = None, size: int = None):
         self.address = addr
         self.string_representation = string_representation
         self.size = size
@@ -59,30 +60,48 @@ class MetadataTable(object):
 
 
 class DotNetPEParser(PE):
-    """
-    Handy reference: https://www.ntcore.com/files/dotnetformat.htm
-    """
-    def __init__(self, file_ref, parse=True, log_level=logging.INFO, *args, **kwargs):
+    def __init__(self, file_ref: PathLike, fast_load: str, fast_load_tables: list, parse: bool = True,
+                 log_level: int = logging.INFO, *args, **kwargs):
+        if isinstance(file_ref, bytes):
+            super().__init__(data=file_ref, *args, **kwargs)
+        else:
+            super().__init__(name=file_ref, *args, **kwargs)
 
-        if isinstance(file_ref, str):
-            super(DotNetPEParser, self).__init__(name=file_ref, *args, **kwargs)
-        elif isinstance(file_ref, bytes):
-            super(DotNetPEParser, self).__init__(data=file_ref, *args, **kwargs)
-
+        # Detected anti metadata parsing tricks
         self.dotnet_anti_metadata = {
             'data_directory_hidden': False,
             'metadata_table_has_extra_data': False,
             'has_fake_data_streams': False,
-            'has_invalid_strings_stream_entries': False
+            'has_invalid_strings_stream_entries': False,
+            'has_max_len_exceeding_strings': False,
+            'has_mixed_case_stream_names': False
         }
 
         if not self.is_dotnet_file():
             raise CLRFormatError('File is not a .NET assembly.')
 
+        self.file_size = 0
+
         if not self.is_metadata_header_complete_and_valid(file_ref):
             raise CLRFormatError('CLR header of file is most likely corrupt.')
 
         self.logger = get_logger('extended_pe_logger', level=log_level)
+
+        # Mapping for mixed case stream names (e.g. "#StRinG") as created by some obfuscators
+        self.stream_names_map = {
+            '#Strings': '#Strings',
+            '#GUID': '#GUID',
+            '#Blob': '#Blob',
+            '#US': '#US'
+        }
+
+        self.fast_load = fast_load
+        if self.fast_load:
+            self.fast_load_tables = fast_load_tables
+            self.full_load_tables = []
+
+        self.metadata_table_rva = None
+        self.metadata_tables_rva = {}
 
         self.clr_header = None
         self.dotnet_metadata_header = None
@@ -97,16 +116,17 @@ class DotNetPEParser(PE):
         # tables under "#~/#-" stream
         self.metadata_tables = []
         self.metadata_tables_lookup = {}
+        self.non_overlap_string_references = set()
         self.dotnet_resources = []
 
         # mapping of offsets inside "#Strings" to string at that offset
         self.dotnet_string_lookup: Dict[int, FileLocation] = {}
+        # mapping of offsets inside "#US" to string at that offset
+        self.dotnet_user_string_lookup: Dict[int, FileLocation] = {}
         # mapping of offsets inside "#Blob" to string at that offset
         self.dotnet_blob_lookup: Dict[int, FileLocation] = {}
         # list of GUIDs inside "#GUID"
         self.guid_stream_guids: List[FileLocation] = []
-        # list of user strings inside "#US"
-        self.user_string_stream_strings: List[FileLocation] = []
         # list of overlap strings inside "#Strings"
         self.dotnet_overlap_string_lookup: Dict[int, FileLocation] = {}
         # list of unused strings inside "#Strings"
@@ -133,7 +153,7 @@ class DotNetPEParser(PE):
 
                 if data_dir_offset != section_offset and section_offset > data_dir_offset:
                     # NumberOfRvaAndSize has been tampered to hide the .NET data directory entry. Pefile fails to parse
-                    # this so we must do it manually
+                    # this, so we must do it manually
                     remaining_entries = (section_offset - data_dir_offset) // (2 * 4)
 
                     if remaining_entries > 0:
@@ -164,7 +184,7 @@ class DotNetPEParser(PE):
 
         return result
 
-    def is_metadata_header_complete_and_valid(self, file_ref: str | bytes) -> bool:
+    def is_metadata_header_complete_and_valid(self, file_ref: PathLike) -> bool:
         """
         Check if the metadata data is complete according to the values in the Cor20 header
         """
@@ -188,47 +208,51 @@ class DotNetPEParser(PE):
         # MajorRuntimeVersion (2 bytes), MinorRuntimeVersion (2 bytes) and Metadata.VirtualAddress (4 bytes) fields
         metadata_size = self.get_dword_at_rva(rva=dotnet_header_rva + 4 + 2 + 2 + 4)
         metadata_offset = self.get_offset_from_rva(metadata_virtual_address)
-        
-        file_size = 0
-        
-        if isinstance(file_ref, str):
-            if os.path.isfile(file_ref):
-                file_size = os.path.getsize(file_ref)
-        elif isinstance(file_ref, bytes):
-            file_size = len(file_ref)
+
+        if isinstance(file_ref, bytes):
+            self.file_size = len(file_ref)
+        elif os.path.isfile(file_ref):
+            self.file_size = os.path.getsize(file_ref)
 
         # Check if metadata is incomplete or the metadata signature is not at the beginning of the data
-        if metadata_offset + metadata_size > file_size or self.get_data(metadata_virtual_address, 4) != b'BSJB':
+        if metadata_offset + metadata_size > self.file_size or self.get_data(metadata_virtual_address, 4) != b'BSJB':
             result = False
 
         return result
 
-    def parse_all(self):
+    def parse_all(self) -> None:
         self.clr_header = self.get_clr_header()
         self.dotnet_metadata_header = self.get_dotnet_metadata_header()
         self.parse_dotnet_stream_headers()
-        self.parse_dotnet_streams()
-        self.parse_dotnet_resources()
+        if self.fast_load == 'header_only':
+            tilde_string = '#~' if '#~' in list(self.dotnet_stream_lookup) else '#-'
+            self.parse_tilde_stream_header(tilde_string)
+        else:
+            self.parse_dotnet_streams()
+        if self.fast_load in ('normal_resources', ''):
+            self.parse_dotnet_resources()
 
     def parse_dotnet_streams(self) -> None:
         """
-        After we parsed the stream headers, lets parse the actual streams themselves
+        After we parsed the stream headers, let's parse the actual streams themselves
         """
         for stream_name in self.dotnet_stream_lookup:
-            if stream_name in ['#~', '#-']:
-                self.parse_tilde_stream(stream_name)
-            elif stream_name == '#Strings':
+            if stream_name in ('#~', '#-'):
+                if not self.fast_load in ('header_only', None):
+                    self.parse_tilde_stream_header(stream_name)
+                self.parse_tilde_stream()
+            elif stream_name == self.stream_names_map['#Strings']:
                 self.parse_strings_stream()
-            elif stream_name == '#GUID':
+            elif stream_name == self.stream_names_map['#GUID']:
                 self.parse_guid_stream()
-            elif stream_name == '#Blob':
+            elif stream_name == self.stream_names_map['#Blob']:
                 self.parse_blob_stream()
-            elif stream_name == '#US':
+            elif stream_name == self.stream_names_map['#US']:
                 self.parse_us_stream()
             else:
                 self.logger.info(f'unknown stream name: {stream_name}')
 
-    def get_clr_header(self):
+    def get_clr_header(self) -> DOTNET_CLR_HEADER:
         clr_header_dir = self.__IMAGE_DATA_DIRECTORY_format__
 
         if self.dotnet_anti_metadata['data_directory_hidden']:
@@ -256,7 +280,7 @@ class DotNetPEParser(PE):
 
         return DOTNET_CLR_HEADER(offset, data_bytes)
 
-    def get_dotnet_metadata_header(self):
+    def get_dotnet_metadata_header(self) -> Optional[DOTNET_METADATA_HEADER]:
         metadata_stream_rva = self.clr_header.MetaDataDirectoryAddress.value
         metadata_size = self.clr_header.MetaDataDirectorySize.value
         if metadata_stream_rva != 0 and metadata_size != 0:
@@ -292,20 +316,20 @@ class DotNetPEParser(PE):
         metadata_hdr_size = self.dotnet_metadata_header.size
         num_streams = self.dotnet_metadata_header.NumberOfStreams.value
         cumulative_size = 0
-        # To counteract ConfuserEx that adds invalid streams to the end of the regular ones, we check if a stream was
-        # already parsed and skip if positive
+        # To counteract ConfuserEx that adds invalid streams to the end of the regular ones, we check
+        # if a stream was already parsed and skip if positive
         supported_streams = {
             '#~': False,
             '#-': False,
-            '#Strings': False,
-            '#GUID': False,
-            '#Blob': False,
-            '#US': False
+            '#strings': False,
+            '#guid': False,
+            '#blob': False,
+            '#us': False
         }
 
         for i in range(num_streams):
             curr_stream_rva = metadata_stream_rva + metadata_hdr_size + cumulative_size
-            # 0x100 is arbitrary large enough, but it is later trimmed anyways
+            # 0x100 is arbitrary large enough, but it is later trimmed anyway
             current_stream_bytes = self.get_data(curr_stream_rva, length=0x100)
             current_stream_header = DOTNET_STREAM_HEADER(curr_stream_rva, current_stream_bytes)
             current_stream_header.trim_byte_buffer()
@@ -317,20 +341,27 @@ class DotNetPEParser(PE):
             current_stream_rva = metadata_stream_rva + current_stream_header.Offset.value
             current_stream_size = current_stream_header.Size.value
             current_stream_header_name = current_stream_header.Name.field_text
+            current_stream_header_name_lc = current_stream_header_name.lower()
 
             current_stream = FileLocation(current_stream_rva, current_stream_header_name, current_stream_size)
             self.dotnet_streams.append(current_stream)
 
             # e.g "#Strings"
-            if current_stream_header_name in supported_streams.keys():
-                if not supported_streams[current_stream_header_name]:
+            if current_stream_header_name_lc in supported_streams.keys():
+                if not supported_streams[current_stream_header_name_lc]:
                     self.dotnet_stream_header_lookup[current_stream_header_name] = current_stream_header
                     self.dotnet_stream_lookup[current_stream_header_name] = current_stream
 
-                if current_stream_header_name in ['#~', '#-']:
+                if current_stream_header_name_lc in ['#~', '#-']:
                     supported_streams['#~'] = supported_streams['#-'] = True
                 else:
-                    supported_streams[current_stream_header_name] = True
+                    supported_streams[current_stream_header_name_lc] = True
+
+                    if current_stream_header_name not in self.stream_names_map.keys():
+                        for stream_name in self.stream_names_map.keys():
+                            if stream_name.lower() == current_stream_header_name_lc:
+                                self.stream_names_map[stream_name] = current_stream_header_name
+                        self.dotnet_anti_metadata['has_mixed_case_stream_names'] = True
             else:
                 self.dotnet_anti_metadata['has_fake_data_streams'] = True
 
@@ -338,7 +369,34 @@ class DotNetPEParser(PE):
                 f'parsing stream: {current_stream_header_name} rva: 0x{current_stream_rva:x} '
                 f'size: 0x{current_stream_size:x}')
 
-    def parse_tilde_stream(self, stream_name: str) -> None:
+    def _get_metadata_table_rva(self) -> None:
+        # This method currently cannot be bound to fast load as the correct table order must be
+        # preserved to get the correct table addresses and thus the correct table data. Therefore,
+        # we always get all the table RVAs and not just the ones we have selected via fast load.
+        metadata_tables = self.dotnet_metadata_stream_header.table_names
+        current_row_rva = self.metadata_table_rva
+
+        for table_name in metadata_tables:
+            table_rows_num = self.dotnet_metadata_stream_header.table_size_lookup[table_name]
+
+            row_type = get_metadata_row_class_for_table(table_name)
+            if row_type is None:
+                continue
+
+            # Ugly fixes for the edge(?) cases that a sample doesn't have a Field or Param table that is
+            # cross-referenced in the TypeRef or MethodDef table
+            if table_name == 'TypeDef' and 'Field' not in self.dotnet_metadata_stream_header.table_names or \
+                    table_name == 'MethodDef' and 'Param' not in self.dotnet_metadata_stream_header.table_names:
+                table_row_size = 14
+            else:
+                table_row_size = self.parse_metadata_table_row_size(current_row_rva, row_type)
+
+            table_size = table_row_size * table_rows_num
+            self.metadata_tables_rva[table_name] = current_row_rva
+
+            current_row_rva += table_size
+
+    def parse_tilde_stream_header(self, stream_name: str) -> None:
         stream = self.dotnet_stream_lookup[stream_name]
         # max value, later will be trimmed
         metadata_size = self.clr_header.MetaDataDirectorySize.value
@@ -358,33 +416,45 @@ class DotNetPEParser(PE):
         metadata_header_size = self.dotnet_metadata_stream_header.size
 
         # To counteract .NET protectors like ConfuserEx which add extra data at the end of the metadata table header,
-        # we have add the length of these bytes to achieve proper parsing of the remaining header
+        # we add the length of these bytes to achieve proper parsing of the remaining header
         if self.dotnet_metadata_stream_header.table_has_extra_data:
             self.dotnet_anti_metadata['metadata_table_has_extra_data'] = True
             metadata_header_size += 4
 
-        metadata_tables_rva = stream.address + metadata_header_size
+        self.metadata_table_rva = stream.address + metadata_header_size
         self.logger.debug(
-            f'parsing metadata at raw offset: 0x{metadata_tables_rva:x} '
+            f'parsing metadata at raw offset: 0x{self.metadata_table_rva:x} '
             f'metadata header size: 0x{metadata_header_size:x}')
 
-        self.parse_all_metadata_tables(metadata_tables_rva)
+    def parse_tilde_stream(self) -> None:
+        if self.fast_load and self.fast_load is not None:
+            metadata_tables = []
+            for fast_load_table in self.fast_load_tables:
+                if fast_load_table in self.dotnet_metadata_stream_header.table_names:
+                    metadata_tables.append(fast_load_table)
 
-    def parse_all_metadata_tables(self, tables_rva: int) -> None:
+            for table_name in self.dotnet_metadata_stream_header.table_names:
+                if table_name not in metadata_tables:
+                    self.full_load_tables.append(table_name)
+        else:
+            metadata_tables = self.dotnet_metadata_stream_header.table_names
+
+        self._get_metadata_table_rva() # This part currently cannot be bound to fast load (see method)
+        self.parse_metadata_tables(metadata_tables)
+
+    def parse_metadata_tables(self, metadata_tables: list) -> None:
         """
-        This parses all of the metadata tables in the "#~/#-" stream
+        This parses all the metadata tables in the "#~/#-" stream
         """
-        current_table_rva = tables_rva
-        for table_name in self.dotnet_metadata_stream_header.table_names:
+        for table_name in metadata_tables:
             try:
                 table_size = self.dotnet_metadata_stream_header.table_size_lookup[table_name]
                 self.logger.debug(f'parsing table {table_name} size: {table_size:d}')
-                metadata_table = self.parse_metadata_table(table_name, current_table_rva, table_size)
+                metadata_table = self.parse_metadata_table(table_name, self.metadata_tables_rva[table_name], table_size)
 
                 if metadata_table is not None:
                     self.metadata_tables.append(metadata_table)
                     self.metadata_tables_lookup[table_name] = metadata_table
-                    current_table_rva += metadata_table.size
                 else:
                     raise Exception(f'table not parsed correctly: {table_name}')
 
@@ -394,10 +464,10 @@ class DotNetPEParser(PE):
                 self.logger.exception(e)
                 raise Exception(error_string)
 
-    def parse_metadata_table_row_size(self, table_row_addr, row_type) -> int:
+    def parse_metadata_table_row_size(self, table_row_addr: int, row_type: Type[MODULE_TABLE_ROW]) -> int:
         """
-        This is a little weird but tables + their rows are dynamically sized so we dont know how big they are till
-        after the objects parse them, so we need to calculate the size based on the first row
+        This is a little weird but tables + their rows are dynamically sized, so we don't know how big they are
+        till after the objects parse them, so we need to calculate the size based on the first row
 
         :param table_row_addr: address of the first row of the table
         :param row_type: class of the row
@@ -406,7 +476,7 @@ class DotNetPEParser(PE):
         table_row = row_type(self, table_row_addr, table_row_bytes)
         return table_row.size
 
-    def parse_metadata_table(self, table_name: str, table_rva: int, num_rows: int):
+    def parse_metadata_table(self, table_name: str, table_rva: int, num_rows: int) -> Optional[MetadataTable]:
         """
         This parses a single metadata table
         """
@@ -440,7 +510,7 @@ class DotNetPEParser(PE):
 
         return metadata_table
 
-    def _get_all_string_references(self) -> set:
+    def _get_all_string_references(self) -> Set:
         result = set()
 
         for metadata_table in self.metadata_tables_lookup.values():
@@ -451,15 +521,24 @@ class DotNetPEParser(PE):
         return result
 
     def _get_non_standard_strings(self, string_type: str, string_references: List, all_strings_data: bytes) -> None:
+        if string_type == 'overlap':
+            self.dotnet_overlap_string_lookup = {}
+        elif string_type == 'unused':
+            self.dotnet_unused_string_lookup = {}
+
         for string_reference in string_references:
             current_string_bytes = all_strings_data[string_reference:string_reference + MAX_DOTNET_STRING_LENGTH]
             current_string = read_null_terminated_byte_string(current_string_bytes, MAX_DOTNET_STRING_LENGTH)
 
-            # Catch invalid string entries as added by obfuscators like ConfuserEx in additional and invalid
-            # Assembly/Module table rows
+            # Catch invalid or max length exceeding string entries as added by obfuscators like ConfuserEx
+            # (in additional and invalid Assembly/Module table rows)
             if current_string is None:
-                self.dotnet_anti_metadata['has_invalid_strings_stream_entries'] = True
-                continue
+                if len(current_string_bytes) == MAX_DOTNET_STRING_LENGTH:
+                    current_string_bytes = all_strings_data[string_reference:]
+                    current_string = read_null_terminated_byte_string(current_string_bytes, len(current_string_bytes))
+                else:
+                    self.dotnet_anti_metadata['has_invalid_strings_stream_entries'] = True
+                    continue
 
             current_string_size = len(current_string) + 1
             current_string_location = FileLocation(string_reference, current_string, current_string_size)
@@ -470,25 +549,50 @@ class DotNetPEParser(PE):
             elif string_type == 'unused':
                 self.dotnet_unused_string_lookup[string_reference] = current_string_location
 
-    def parse_strings_stream(self) -> None:
-        stream = self.dotnet_stream_lookup['#Strings']
+    def _get_strings_stream_data(self) -> bytes:
+        stream = self.dotnet_stream_lookup[self.stream_names_map['#Strings']]
 
-        current_string_rva = stream.address
-        all_strings_data = self.get_data(stream.address, stream.size)
+        result = self.get_data(stream.address, stream.size)
 
         # We remove the trailing extra 0-bytes in the strings data except for one belonging to the last string
-        all_strings_data = all_strings_data.rstrip(b'\x00') + b'\x00'
+        result = result.rstrip(b'\x00') + b'\x00'
+
+        return result
+
+    def parse_non_standard_strings(self) -> None:
+        all_strings_data = self._get_strings_stream_data()
+        all_string_references = self._get_all_string_references()
+
+        # Get overlap strings
+        overlap_string_references = sorted(all_string_references - self.non_overlap_string_references)
+        self._get_non_standard_strings('overlap', overlap_string_references, all_strings_data)
+        # Get unused strings (not referenced anywhere)
+        unused_string_references = sorted(self.non_overlap_string_references - all_string_references)
+        self._get_non_standard_strings('unused', unused_string_references, all_strings_data)
+
+    def parse_strings_stream(self) -> None:
+        stream = self.dotnet_stream_lookup[self.stream_names_map['#Strings']]
+
+        current_string_rva = stream.address
+        all_strings_data = self._get_strings_stream_data()
 
         # Get standard strings from the #Strings stream
-        non_overlap_string_references = set()
         while current_string_rva <= stream.address + stream.size:
             current_start_offset = current_string_rva - stream.address
             current_string_bytes = all_strings_data[current_start_offset:current_start_offset + MAX_DOTNET_STRING_LENGTH]
             current_string = read_null_terminated_byte_string(current_string_bytes, MAX_DOTNET_STRING_LENGTH)
 
             if current_string is None:
-                current_string_rva += 1
-                continue
+                if len(current_string_bytes) == MAX_DOTNET_STRING_LENGTH:
+                    # Maximum string length exceeds value defined in Roslyn compiler, thus that string
+                    # was artificially added. While the #C standard does not mention any length limit,
+                    # it is effectively set to 1024 characters.
+                    self.dotnet_anti_metadata['has_max_len_exceeding_strings'] = True
+                    current_string_bytes = all_strings_data[current_start_offset:]
+                    current_string = read_null_terminated_byte_string(current_string_bytes, len(current_string_bytes))
+                else:
+                    current_string_rva += 1
+                    continue
 
             current_string_size = len(current_string) + 1
             current_string_location = FileLocation(current_string_rva, current_string, current_string_size)
@@ -499,22 +603,16 @@ class DotNetPEParser(PE):
             self.dotnet_string_lookup[current_start_offset] = current_string_location
             current_string_rva += current_string_size
 
-            non_overlap_string_references.add(current_start_offset)
+            self.non_overlap_string_references.add(current_start_offset)
 
-        all_string_references = self._get_all_string_references()
-        # Get overlap strings
-        overlap_string_references = sorted(all_string_references - non_overlap_string_references)
-        self._get_non_standard_strings('overlap', overlap_string_references, all_strings_data)
-        # Get unused strings (not referenced anywhere)
-        unused_string_references = sorted(non_overlap_string_references - all_string_references)
-        self._get_non_standard_strings('unused', unused_string_references, all_strings_data)
+        self.parse_non_standard_strings()
 
     @property
     def string_stream_strings(self):
         return self.dotnet_string_lookup.values()
 
     def parse_guid_stream(self) -> None:
-        stream = self.dotnet_stream_lookup['#GUID']
+        stream = self.dotnet_stream_lookup[self.stream_names_map['#GUID']]
         current_guid_rva = stream.address
         stream_end_address = stream.address + stream.size
 
@@ -566,7 +664,7 @@ class DotNetPEParser(PE):
         # 0x1-0x8,
         # 0x0e-0x1f,
         # 0x27, 0x2D.
-        stream = self.dotnet_stream_lookup['#US']
+        stream = self.dotnet_stream_lookup[self.stream_names_map['#US']]
 
         # The first byte is always 0 and doesn't get referenced, thus we skip it
         current_string_rva = stream.address + 1
@@ -590,12 +688,12 @@ class DotNetPEParser(PE):
                 current_string_name = get_reasonable_display_string_for_bytes(current_string)
                 current_string_location.string_representation = current_string_name
 
-                self.user_string_stream_strings.append(current_string_location)
+                self.dotnet_user_string_lookup[current_string_rva - stream.address] = current_string_location
 
             current_string_rva += current_string_size
 
     def parse_blob_stream(self) -> None:
-        stream = self.dotnet_stream_lookup['#Blob']
+        stream = self.dotnet_stream_lookup[self.stream_names_map['#Blob']]
 
         # This stream starts with a null byte.
         current_blob_rva = stream.address + 1
@@ -622,7 +720,7 @@ class DotNetPEParser(PE):
             current_blob_rva += current_blob_size
 
     @staticmethod
-    def get_max_rows(table_size_lookup: Dict[str: int], table_names: List[str]):
+    def get_max_rows(table_size_lookup: Dict[str: int], table_names: List[str]) -> int:
         max_rows = 0
         for table_name in table_names:
             if table_name in table_size_lookup:
@@ -632,7 +730,8 @@ class DotNetPEParser(PE):
 
         return max_rows
 
-    def get_field_size_info(self, table_size_lookup: Dict[str: int], table_names: List[str], encoding_bits):
+    def get_field_size_info(self, table_size_lookup: Dict[str: int], table_names: List[str], encoding_bits) \
+            -> Tuple[int, str]:
         two_byte_max_rows = 1 << (16 - encoding_bits)
 
         max_rows = self.get_max_rows(table_size_lookup, table_names)
@@ -642,7 +741,7 @@ class DotNetPEParser(PE):
 
         return 2, 'H'
 
-    def calculate_field_size_info(self, table_size_lookup: Dict[str: int]):
+    def calculate_field_size_info(self, table_size_lookup: Dict[str: int]) -> dict:
         field_size_info = {}
 
         for field_name in TABLE_ROW_VARIABLE_LENGTH_FIELDS:
@@ -654,7 +753,7 @@ class DotNetPEParser(PE):
 
         return field_size_info
 
-    def _resources_exist(self):
+    def _resources_exist(self) -> bool:
         """
         Check if .NET resources exists.
         """
@@ -895,8 +994,12 @@ class DotNetPEParser(PE):
                                             next_sub_resource_start += 1
                                             break
 
-                            sub_resource_type_length, sub_resource_type = read_7bit_encoded_uint32(
-                                self.get_data(sub_resource_start, 4))
+                            try:
+                                sub_resource_type_length, sub_resource_type = read_7bit_encoded_uint32(
+                                    self.get_data(sub_resource_start, 4))
+                            except IndexError:
+                                self.logger.info('Sub-resource seems to be corrupt or missing.')
+                                continue
                             sub_resource_size_full = next_sub_resource_start - sub_resource_start
                             sub_resource_data, sub_resource_size = self._read_resource_data(
                                 sub_resource_start + sub_resource_type_length,

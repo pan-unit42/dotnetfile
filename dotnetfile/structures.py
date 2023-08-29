@@ -1,7 +1,7 @@
 """
 Part of dotnetfile
 
-Copyright (c) 2016, 2021-2022 - Bob Jung, Yaron Samuel, Dominik Reichel
+Copyright (c) 2016, 2021-2023 - Bob Jung, Yaron Samuel, Dominik Reichel
 """
 
 from enum import IntEnum

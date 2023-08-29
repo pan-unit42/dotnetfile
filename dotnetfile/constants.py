@@ -1,10 +1,27 @@
 """
 Part of dotnetfile
 
-Copyright (c) 2016, 2021-2022 - Bob Jung, Yaron Samuel, Dominik Reichel
+Copyright (c) 2016, 2021-2023 - Bob Jung, Yaron Samuel, Dominik Reichel
 """
 
+# Max string length reference:
+# https://github.com/dotnet/roslyn/blob/main/src/Compilers/Core/Portable/PEWriter/MetadataWriter.cs#L51
 MAX_DOTNET_STRING_LENGTH = 1024
+
+FAST_LOAD_TABLES_DEFAULT = [
+    'Module',
+    'TypeRef',
+    'TypeDef',
+    'MethodDef',
+    'MemberRef',
+    'CustomAttribute',
+    'Event',
+    'ModuleRef',
+    'ImplMap',
+    'Assembly',
+    'AssemblyRef',
+    'ManifestResource'
+]
 
 TABLE_ROW_VARIABLE_LENGTH_FIELDS = {
     'TypeDefOrRef':         ['TypeDef', 'TypeRef', 'TypeSpec'],

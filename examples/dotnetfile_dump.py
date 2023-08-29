@@ -1,3 +1,9 @@
+"""
+Author: Dominik Reichel - Palo Alto Networks (2022)
+
+Display CLR header information of .NET assemblies.
+"""
+
 import os
 import argparse
 
@@ -32,7 +38,10 @@ def main():
     print(f'\tHas fake data streams: {dotnet_file.AntiMetadataAnalysis.has_fake_data_streams}')
     print(f'\tHas more than one row in Module table: {dotnet_file.AntiMetadataAnalysis.module_table_has_multiple_rows}')
     print(f'\tHas more than one row in Assembly table: {dotnet_file.AntiMetadataAnalysis.assembly_table_has_multiple_rows}')
-    print(f'\tHas invalid entries in #Strings stream: {dotnet_file.AntiMetadataAnalysis.has_invalid_strings_stream_entries}\n')
+    print(f'\tHas invalid entries in #Strings stream: {dotnet_file.AntiMetadataAnalysis.has_invalid_strings_stream_entries}')
+    print(f'\tHas invalid entries in MethodDef table: {dotnet_file.AntiMetadataAnalysis.has_invalid_methoddef_entries}')
+    print(f'\tHas maximum length exceeding string(s): {dotnet_file.AntiMetadataAnalysis.has_max_len_exceeding_strings}')
+    print(f'\tHas mixed case stream name(s): {dotnet_file.AntiMetadataAnalysis.has_mixed_case_stream_names}\n')
 
     defined_entry_point = dotnet_file.Cor20Header.get_header_entry_point()
     if defined_entry_point:
@@ -134,7 +143,7 @@ def main():
         print(f'\t\tSHA256: {dotnet_file.TypeRef.get_typeref_hash()}')
 
         print('\tTypeRef hash (sorted, include self-referenced entries):')
-        print(f'\t\tSHA256: {dotnet_file.TypeRef.get_typeref_hash(dotnet_file.Type.Hash.SHA256, False, True)}\n')
+        print(f'\t\tSHA256: {dotnet_file.TypeRef.get_typeref_hash(skip_self_referenced_entries=False, strings_sorted=True)}\n')
 
     if 'TypeDef' in available_tables:
         print('TypeDef')
