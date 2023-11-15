@@ -1136,6 +1136,50 @@ class MemberRef:
 
         return result
 
+    
+    def get_memberrefs_with_namespaces(self, strings_sorted: bool = False) -> List[str]:
+        """
+        Useful in order to differentiate among different functions with same names, for example:
+        - System.Net.Sockets.Socket::Send
+        - System.Windows.Forms.SendKeys::Send
+        - System.Web.Mail.SmtpMail::Send
+
+        Or different constructors such as:
+        - System.IO.Pipes.AnonymousPipeClientStream::ctor
+        - System.Security.Cryptography.SHA1Managed::ctor
+
+        It is not very useful to have "ctor" many times in the array returned from get_memberref_names()
+        """
+        memberRefs_with_Namespace = []
+        for current_row_index, table_row in enumerate(self.dotnetpe.metadata_tables_lookup['MemberRef'].table_rows):
+            name_string_address = table_row.string_stream_references['Name']
+            name_string = self.dotnetpe.get_string(name_string_address)
+
+            class_table = table_row.table_references['Class'][0]
+            class_table_index = table_row.table_references['Class'][1] - 1
+
+            if class_table in ["TypeRef", "TypeNamespace"]: # not TypeSpec
+                name = "TypeName"
+                namespace = "TypeNamespace"
+                typename_string_address = self.dotnetpe.metadata_tables_lookup[class_table].table_rows[class_table_index].string_stream_references[name]
+                typenamespace_string_address = self.dotnetpe.metadata_tables_lookup[class_table].table_rows[class_table_index].string_stream_references[namespace]
+                typename_name = self.dotnetpe.get_string(typename_string_address)
+                typenamespace_name = self.dotnetpe.get_string(typenamespace_string_address)
+                if len(name_string) > 2 and name_string[0] == "." :
+                    name_string = name_string[1:]
+                if len(typename_name) > 2 and typename_name[0] == "." :
+                    typename_name = typename_name[1:]
+                if len(typenamespace_name) > 2 and typenamespace_name[0] == ".":
+                    typenamespace_name = typenamespace_name[1:]
+                full_function_path = typenamespace_name + "." + typename_name
+                memberRefs_with_Namespace.append(f'{full_function_path}::{name_string}')
+
+        if strings_sorted: ##### ??????? does it work?
+            memberRefs_with_Namespace.sort(key=lambda x: x.split('::')[1])
+
+        return memberRefs_with_Namespace
+    
+    
     def get_memberref_hash(self, hash_type: Type.Hash = Type.Hash.SHA256, strings_sorted: bool = False) -> str:
         """
         MemberRefHash: Get hash of reference (to methods and fields of a class) and table names of their
