@@ -1302,6 +1302,48 @@ class Assembly:
         return result
 
 
+    def get_assembly_custom_attribute(self, dotnetpe, customAttrib) -> str:
+        try:
+            for table_row in dotnetpe.metadata_tables_lookup['CustomAttribute'].table_rows:
+                type_table_index = table_row.table_references['Type'][0] #MemberRef
+                memberRef_table_row_index = table_row.table_references['Type'][1] - 1 # RID
+                memberRef_table_row = dotnetpe.metadata_tables_lookup[type_table_index].table_rows[memberRef_table_row_index]
+
+                if dotnetpe.get_string(memberRef_table_row.string_stream_references['Name']) == ".ctor":
+                    parent_table_index = table_row.table_references['Parent'][0] #Assembly
+                    parent_table_row_index = table_row.table_references['Parent'][1] - 1
+                    parent_table_row = dotnetpe.metadata_tables_lookup[parent_table_index].table_rows[parent_table_row_index]
+
+                    if 'Name' in parent_table_row.string_stream_references and \
+                        dotnetpe.get_string(parent_table_row.string_stream_references['Name']) == dotnetpe.Assembly.get_assembly_name():
+                            class_table = memberRef_table_row.table_references['Class'][0]
+                            class_table_index = memberRef_table_row.table_references['Class'][1] - 1
+
+                            typename_string_address = dotnetpe.metadata_tables_lookup[class_table].table_rows[class_table_index].string_stream_references["TypeName"]
+                            typeRef_name = dotnetpe.get_string(typename_string_address)
+                            if typeRef_name == customAttrib:
+                                str_addr = dotnetpe.dotnet_blob_lookup[table_row.Value.value]
+                                return dotnetpe.get_string_at_rva(str_addr.address + 4)
+            return ""
+        except:
+            return "ERROR"
+
+
+    def get_assembly_custom_attributes(self) -> dict:
+        ret = {}
+        ret["AssemblyTitle"] = self.get_dotnet_custom_attribute(self.dotnetpe, 'AssemblyTitleAttribute')
+        ret["AssemblyProduct"] = self.get_dotnet_custom_attribute(self.dotnetpe, 'AssemblyProductAttribute')
+        ret["AssemblyCompany"] = self.get_dotnet_custom_attribute(self.dotnetpe, 'AssemblyCompanyAttribute')
+        ret["AssemblyDescription"] = self.get_dotnet_custom_attribute(self.dotnetpe, 'AssemblyDescriptionAttribute')
+        ret["AssemblyConfiguration"] = self.get_dotnet_custom_attribute(self.dotnetpe, 'AssemblyConfigurationAttribute')
+        ret["AssemblyFileVersion"] = self.get_dotnet_custom_attribute(self.dotnetpe, 'AssemblyFileVersionAttribute')
+        ret["AssemblyCopyright"] = self.get_dotnet_custom_attribute(self.dotnetpe, 'AssemblyCopyrightAttribute')
+        ret["AssemblyGuid"] = self.get_dotnet_custom_attribute(self.dotnetpe, 'GuidAttribute')
+        return ret
+
+
+
+
 # Table 35
 @metatable
 class AssemblyRef:
