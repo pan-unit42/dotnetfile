@@ -1,7 +1,9 @@
 """
 Part of dotnetfile
 
-Copyright (c) 2016, 2021-2023 - Bob Jung, Yaron Samuel, Dominik Reichel
+Original author:        Bob Jung - Palo Alto Networks (2016)
+Modified/Expanded by:   Yaron Samuel - Palo Alto Networks (2021-2022),
+                        Dominik Reichel - Palo Alto Networks (2021-2025)
 """
 
 import logging

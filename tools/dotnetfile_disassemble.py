@@ -4,6 +4,8 @@ Author: Dominik Reichel - Palo Alto Networks (2022)
 Disassemble .NET assembly IL code with the help of dncil (https://github.com/mandiant/dncil).
 """
 
+# pylint: disable=E1101,E0401
+
 import argparse
 
 from dncil.cil.body import reader

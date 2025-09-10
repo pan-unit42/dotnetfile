@@ -1,7 +1,9 @@
 """
 Part of dotnetfile
 
-Copyright (c) 2016, 2021-2023 - Bob Jung, Yaron Samuel, Dominik Reichel
+Original author:        Bob Jung - Palo Alto Networks (2016)
+Modified/Expanded by:   Yaron Samuel - Palo Alto Networks (2021-2022),
+                        Dominik Reichel - Palo Alto Networks (2021-2025)
 """
 
 from __future__ import annotations
@@ -10,6 +12,8 @@ import binascii
 import struct
 
 from typing import Optional, Union, Dict, Tuple
+
+from .constants import BlobSignatureType
 
 REASONABLE_CHARACTER_BYTES = (b'0123456789'
                               b'abcdefghijklmnopqrstuvwxyz'
@@ -61,15 +65,25 @@ def get_reasonable_display_string_for_bytes(string_bytes: bytes) -> str:
     """
     Wrapper for when we encounter string in memory and need to just display it somehow.
     """
-    display_string = convert_to_unicode(string_bytes)
+    result = convert_to_unicode(string_bytes)
 
-    if display_string is None:
-        display_string = f'(hex){binascii.hexlify(string_bytes)}'
+    if result is None:
+        result = f'(hex){binascii.hexlify(string_bytes)}'
 
-    return display_string
+    return result
 
 
-def read_null_terminated_byte_string(byte_buffer, limit: int = 128):
+def get_reasonable_display_unicode_string_for_bytes(string_bytes: bytes) -> str:
+    for encoding in ['utf-16', 'utf-16-le', 'utf-16-be']:
+        try:
+            return string_bytes.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+
+    return f'(hex){binascii.hexlify(string_bytes).decode("ascii")}'
+
+
+def read_null_terminated_byte_string(byte_buffer, limit: int = 128) -> Optional[bytearray]:
     """
     This attempts to read a string of any arbitrary bytes until it encounters a terminating null char.
     """
@@ -85,16 +99,15 @@ def read_null_terminated_byte_string(byte_buffer, limit: int = 128):
     return None
 
 
-def read_reasonable_string(byte_buffer, limit: int = 128):
+def read_reasonable_string(byte_buffer, limit: int = 128) -> Optional[str]:
     """
-    This attempts to read a null terminated ascii string from the supplied buffer. This is useful parsing strings from
-    PE headers that should be well formed.
+    This attempts to read a null terminated ASCII string from the supplied buffer. This is useful parsing strings from
+    PE headers that should be well-formed.
     """
     null_terminated_string = bytes()
     search_buffer = byte_buffer[:limit]
 
     for b in search_buffer:
-
         if b == 0:
             return null_terminated_string.decode('utf-8')
 
@@ -106,7 +119,7 @@ def read_reasonable_string(byte_buffer, limit: int = 128):
 
 def bytes_to_ascii(byte_str: Union[str, bytes]) -> Union[str, bytes]:
     """
-    Helper function to convert the supplied byte string to a python string.
+    Helper function to convert the supplied byte string to a Python string.
     """
     ascii_str = ''
     for b in byte_str:
@@ -165,7 +178,7 @@ def read_7bit_encoded_uint32(byte_input: bytes) -> Tuple[int, int]:
 
 def read_7bit_encoded_int32(byte_input: bytes) -> Tuple[int, int]:
     """
-    Get the dynamically encoded length from a Int32 value for the subsequent data bytes.
+    Get the dynamically encoded length from an Int32 value for the subsequent data bytes.
     """
     result = 0
     shift = 0
@@ -278,7 +291,7 @@ class BinaryStructure(object):
     def trim_byte_buffer(self) -> None:
         """
         This is useful for trimming down the size of a structure byte buffer after it is done parsing. This is sometimes
-        useful for when we dont know how big something is until after we parse it, i.e. .NET table rows.
+        useful for when we don't know how big something is until after we parse it, i.e. for .NET table rows.
         """
         byte_buffer_size = self.size
         self.set_byte_buffer_size(byte_buffer_size)
@@ -309,7 +322,10 @@ class BinaryStructureField(FileLocation):
     @property
     def value(self):
         if self.__value is None:
-            self.__value = struct.unpack(self.format_str, self.__value_bytes)[0]
+            try:
+                self.__value = struct.unpack(self.format_str, self.__value_bytes)[0]
+            except struct.error:
+                self.__value = None
 
         return self.__value
 
@@ -319,8 +335,24 @@ class BinaryStructureField(FileLocation):
             if isinstance(self.value, str):
                 self.__field_text = {self.value}
             elif isinstance(self.value, bytes):
-                self.__field_text = self.value.decode(errors='ignore').rstrip('\x00')
+                self.__field_text = self.value.split(b'\x00', 1)[0].decode(errors='ignore')
             else:
                 self.__field_text = f'0x{self.value:x}'
 
         return self.__field_text
+
+
+class BlobDataStructure(object):
+    """
+    Structure for #Blob data items.
+    """
+    def __init__(self, address: int,
+                 byte_buffer: bytes,
+                 size: int,
+                 signature_type: BlobSignatureType,
+                 structure_fields: Dict):
+        self.address = address
+        self.buffer = byte_buffer
+        self.size = size
+        self.signature_type = signature_type
+        self.structure_fields = structure_fields

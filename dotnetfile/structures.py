@@ -1,7 +1,9 @@
 """
 Part of dotnetfile
 
-Copyright (c) 2016, 2021-2023 - Bob Jung, Yaron Samuel, Dominik Reichel
+Original author:        Bob Jung - Palo Alto Networks (2016)
+Modified/Expanded by:   Yaron Samuel - Palo Alto Networks (2021-2022),
+                        Dominik Reichel - Palo Alto Networks (2021-2025)
 """
 
 from enum import IntEnum
@@ -65,8 +67,8 @@ class DOTNET_STREAM_HEADER(BinaryStructure):
         self.Size = self.create_field_value('Size', 4, 'I')
 
         name = read_reasonable_string(byte_buffer[8:])
-
         name_len = len(name)
+        # 4 = 4-byte boundary
         name_len_padding = 4 - (name_len % 4)
         name_len += name_len_padding
 

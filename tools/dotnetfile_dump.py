@@ -1,25 +1,30 @@
 """
-Author: Dominik Reichel - Palo Alto Networks (2022)
+Author: Dominik Reichel - Palo Alto Networks (2022-2025)
 
 Display CLR header information of .NET assemblies.
 """
 
+# pylint: disable=E1101
+
 import os
+import sys
 import argparse
+import traceback
 
 from dotnetfile import DotNetPE
+from typing import List
 
 
-def main():
-    parser = argparse.ArgumentParser(prog='dotnetfile_dump.py', description='Show .NET header information of assembly.')
-    parser.add_argument(dest='input_file', type=str, help='Absolute file path of .NET assembly.')
-    args = parser.parse_args()
-
-    if not os.path.isabs(args.input_file):
+def process_file(file_path: str) -> None:
+    if not os.path.isabs(file_path):
         print('[-] Please provide absolute file path of .NET assembly.')
         return
 
-    dotnet_file = DotNetPE(args.input_file)
+    print('---')
+    print(f"Processing: {file_path}")
+    print('---\n')
+
+    dotnet_file = DotNetPE(file_path)
 
     print('General information')
     print(f'\t.NET runtime target version: {dotnet_file.get_runtime_target_version()}')
@@ -28,7 +33,19 @@ def main():
     print(f'\tIs a mixed .NET assembly (managed + native code): {dotnet_file.is_mixed_assembly()}')
     print(f'\tHas a native entry point: {dotnet_file.has_native_entry_point()}')
     print(f'\tIs a native image (precompiled) created by Ngen: {dotnet_file.is_native_image()}')
-    print(f'\tIs a Windows Forms app: {dotnet_file.is_windows_forms_app()}\n')
+    print(f'\tIs a Windows Forms app: {dotnet_file.is_windows_forms_app()}')
+    print(f'\tIs a reference assembly: {dotnet_file.is_reference_assembly()}\n')
+
+    print('General assembly information')
+    print('\tAssembly attributes:')
+    assembly_attributes = dotnet_file.get_assembly_attributes()
+    for assembly_attribute in assembly_attributes:
+        print(f'\t\t{assembly_attribute}')
+    print('\tCommon assembly attributes with values:')
+    assembly_attributes_with_values = dotnet_file.get_assembly_attributes_with_values()
+    for assembly_attribute, assembly_attribute_value in assembly_attributes_with_values.items():
+        if assembly_attribute_value:
+            print(f'\t\t{assembly_attribute}: {assembly_attribute_value}')
 
     print('Anti analysis tricks')
     print(f'\t.NET data directory hidden in PE header: {dotnet_file.AntiMetadataAnalysis.is_dotnet_data_directory_hidden}')
@@ -41,7 +58,8 @@ def main():
     print(f'\tHas invalid entries in #Strings stream: {dotnet_file.AntiMetadataAnalysis.has_invalid_strings_stream_entries}')
     print(f'\tHas invalid entries in MethodDef table: {dotnet_file.AntiMetadataAnalysis.has_invalid_methoddef_entries}')
     print(f'\tHas maximum length exceeding string(s): {dotnet_file.AntiMetadataAnalysis.has_max_len_exceeding_strings}')
-    print(f'\tHas mixed case stream name(s): {dotnet_file.AntiMetadataAnalysis.has_mixed_case_stream_names}\n')
+    print(f'\tHas mixed case stream name(s): {dotnet_file.AntiMetadataAnalysis.has_mixed_case_stream_names}')
+    print(f'\tStream name(s) padding bytes patched: {dotnet_file.AntiMetadataAnalysis.stream_name_padding_bytes_patched}\n')
 
     defined_entry_point = dotnet_file.Cor20Header.get_header_entry_point()
     if defined_entry_point:
@@ -107,10 +125,14 @@ def main():
 
     if 'AssemblyRef' in available_tables:
         print('AssemblyRef')
-        print('\tNames:')
-        assembly_names = dotnet_file.AssemblyRef.get_assemblyref_names()
-        for assembly_name in assembly_names:
-            print(f'\t\t{assembly_name}')
+        print('\tNames with versions:')
+        assembly_names_with_versions = dotnet_file.AssemblyRef.get_assemblyref_names_with_versions(deduplicate=True)
+        for assembly_name, assembly_version in assembly_names_with_versions.items():
+            if isinstance(assembly_version, List):
+                assembly_versions = ', '.join(assembly_version)
+                print(f'\t\t{assembly_name}: {assembly_versions}')
+            else:
+                print(f'\t\t{assembly_name}: {assembly_version}')
         print('\tCultures:')
         culture_names = dotnet_file.AssemblyRef.get_assemblyref_cultures()
         for culture_name in culture_names:
@@ -177,7 +199,7 @@ def main():
     if 'MemberRef' in available_tables:
         print('MemberRef')
         print('\tNames:')
-        memberref_names = dotnet_file.MemberRef.get_memberref_names(deduplicate=True)
+        memberref_names = dotnet_file.MemberRef.get_fully_qualified_memberref_names(deduplicate=True, strings_sorted=True)
         for memberref_name in memberref_names:
             print(f'\t\t{memberref_name}')
 
@@ -209,7 +231,7 @@ def main():
         for resource_item in data.items():
             if resource_item[0] == 'SubResources':
                 if resource_item[1]:
-                    print(f'\tSubResources:')
+                    print('\tSubResources:')
                     for sub_resource in resource_item[1]:
                         for sub_resource_item in sub_resource.items():
                             print(f'\t\t{sub_resource_item[0]}: {sub_resource_item[1]}')
@@ -217,6 +239,40 @@ def main():
             else:
                 print(f'\t{resource_item[0]}: {resource_item[1]}')
         print('\t---')
+
+
+def main():
+    parser = argparse.ArgumentParser(prog='dotnetfile_dump.py', description='Show .NET header information of assembly.')
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument('-f', '--file', dest='input_file', type=str, help='Absolute file path of .NET assembly.')
+    group.add_argument('-d', '--directory', dest='input_dir', type=str,
+                       help='Absolute directory path containing .NET assemblies.')
+    args = parser.parse_args()
+
+    if args.input_file:
+        process_file(args.input_file)
+    elif args.input_dir:
+        if not os.path.isabs(args.input_dir):
+            print('[-] Please provide absolute directory path.')
+            return
+
+        if not os.path.isdir(args.input_dir):
+            print(f'[-] Directory does not exist: {args.input_dir}')
+            return
+
+        file_count = 0
+        for file_name in os.listdir(args.input_dir):
+            file_path = os.path.join(args.input_dir, file_name)
+            if os.path.isfile(file_path):
+                try:
+                    process_file(file_path)
+                    file_count += 1
+                except Exception as e:
+                    print(f'[-] Error processing {file_path} - {e}')
+                    print('\tException details:', file=sys.stderr)
+                    traceback.print_exc(file=sys.stderr)
+
+        print(f'\nProcessed {file_count} files from directory: {args.input_dir}')
 
 
 if __name__ == '__main__':

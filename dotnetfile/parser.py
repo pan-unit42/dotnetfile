@@ -1,7 +1,7 @@
 """
 Original author:        Bob Jung - Palo Alto Networks (2016)
 Modified/Expanded by:   Yaron Samuel - Palo Alto Networks (2021-2022),
-                        Dominik Reichel - Palo Alto Networks (2021-2023)
+                        Dominik Reichel - Palo Alto Networks (2021-2025)
 
 dotnetfile - CLR header parsing library for Windows .NET PE files.
 
@@ -32,12 +32,14 @@ from pefile import PE, DIRECTORY_ENTRY, PEFormatError
 from typing import List, Dict, Tuple, Any, Set, Union, Optional, Type
 from pathlib import PurePath
 
-from .util import read_null_terminated_byte_string, get_reasonable_display_string_for_bytes, FileLocation, \
-    read_7bit_encoded_uint32, read_7bit_encoded_int32
+from .util import (read_null_terminated_byte_string, get_reasonable_display_string_for_bytes, FileLocation,
+                   read_7bit_encoded_uint32, read_7bit_encoded_int32, get_reasonable_display_unicode_string_for_bytes,
+                   BlobDataStructure)
 from .logger import get_logger
 from .structures import DOTNET_CLR_HEADER, DOTNET_METADATA_HEADER, DOTNET_STREAM_HEADER, DOTNET_METADATA_STREAM_HEADER
-from .metadata_rows import get_metadata_row_class_for_table, MODULE_TABLE_ROW
-from .constants import TABLE_ROW_VARIABLE_LENGTH_FIELDS, MAX_DOTNET_STRING_LENGTH, BLOB_SIGNATURES, RESOURCE_TYPE_CODES
+from .metadata_rows import get_metadata_row_class_for_table, METADATA_TABLE_ROW
+from .constants import (TABLE_ROW_VARIABLE_LENGTH_FIELDS, MAX_DOTNET_STRING_LENGTH, BLOB_SIGNATURES, RESOURCE_TYPE_CODES,
+                        SIGNATURE_ELEMENT_TYPES, SIGNATURE_ELEMENT_TYPES_REVERSE, CALLING_CONVENTIONS, BlobSignatureType)
 
 
 PathLike = Union[str, bytes, os.PathLike, PurePath]
@@ -52,7 +54,7 @@ class CLRFormatError(Exception):
 
 
 class MetadataTable(object):
-    def __init__(self, table_rows: list, addr: int = None, string_representation: str = None, size: int = None):
+    def __init__(self, table_rows: List, addr: int = None, string_representation: str = None, size: int = None):
         self.address = addr
         self.string_representation = string_representation
         self.size = size
@@ -60,8 +62,8 @@ class MetadataTable(object):
 
 
 class DotNetPEParser(PE):
-    def __init__(self, file_ref: PathLike, fast_load: str, fast_load_tables: list, parse: bool = True,
-                 log_level: int = logging.INFO, *args, **kwargs):
+    def __init__(self, file_ref: PathLike, fast_load: str, fast_load_tables: List, *args, parse: bool = True,
+                 log_level: int = logging.INFO, **kwargs):
         if isinstance(file_ref, bytes):
             super().__init__(data=file_ref, *args, **kwargs)
         else:
@@ -74,7 +76,8 @@ class DotNetPEParser(PE):
             'has_fake_data_streams': False,
             'has_invalid_strings_stream_entries': False,
             'has_max_len_exceeding_strings': False,
-            'has_mixed_case_stream_names': False
+            'has_mixed_case_stream_names': False,
+            'stream_name_padding_bytes_patched': False
         }
 
         if not self.is_dotnet_file():
@@ -124,7 +127,7 @@ class DotNetPEParser(PE):
         # mapping of offsets inside "#US" to string at that offset
         self.dotnet_user_string_lookup: Dict[int, FileLocation] = {}
         # mapping of offsets inside "#Blob" to string at that offset
-        self.dotnet_blob_lookup: Dict[int, FileLocation] = {}
+        self.dotnet_blob_lookup: Dict[int, BlobDataStructure] = {}
         # list of GUIDs inside "#GUID"
         self.guid_stream_guids: List[FileLocation] = []
         # list of overlap strings inside "#Strings"
@@ -142,13 +145,13 @@ class DotNetPEParser(PE):
         result = False
 
         dotnet_dir_number = DIRECTORY_ENTRY['IMAGE_DIRECTORY_ENTRY_COM_DESCRIPTOR']
-        number_of_rva_and_sizes = self.OPTIONAL_HEADER.NumberOfRvaAndSizes
+        number_of_rva_and_sizes = self.OPTIONAL_HEADER.NumberOfRvaAndSizes  # pylint: disable=E1101
 
         try:
             if number_of_rva_and_sizes <= dotnet_dir_number:
                 # Calculate the necessary offsets for verification
                 optional_header_offset = self.NT_HEADERS.get_file_offset() + 4 + self.FILE_HEADER.sizeof()
-                section_offset = optional_header_offset + self.FILE_HEADER.SizeOfOptionalHeader
+                section_offset = optional_header_offset + self.FILE_HEADER.SizeOfOptionalHeader  # pylint: disable=E1101
                 data_dir_offset = self.OPTIONAL_HEADER.DATA_DIRECTORY[number_of_rva_and_sizes - 1].get_file_offset() + 8
 
                 if data_dir_offset != section_offset and section_offset > data_dir_offset:
@@ -177,7 +180,7 @@ class DotNetPEParser(PE):
         else:
             try:
                 if dotnet_data_dir <= self.OPTIONAL_HEADER.NumberOfRvaAndSizes and \
-                        self.OPTIONAL_HEADER.DATA_DIRECTORY[dotnet_data_dir].VirtualAddress != 0:
+                        self.OPTIONAL_HEADER.DATA_DIRECTORY[dotnet_data_dir].VirtualAddress != 0:  # pylint: disable=E1101
                     result = True
             except IndexError:
                 result = False
@@ -238,7 +241,7 @@ class DotNetPEParser(PE):
         """
         for stream_name in self.dotnet_stream_lookup:
             if stream_name in ('#~', '#-'):
-                if not self.fast_load in ('header_only', None):
+                if self.fast_load not in ('header_only', None):
                     self.parse_tilde_stream_header(stream_name)
                 self.parse_tilde_stream()
             elif stream_name == self.stream_names_map['#Strings']:
@@ -260,7 +263,7 @@ class DotNetPEParser(PE):
             optional_header_offset = self.NT_HEADERS.get_file_offset() + 4 + self.FILE_HEADER.sizeof()
             section_offset = optional_header_offset + self.FILE_HEADER.SizeOfOptionalHeader
             last_offset_data_dir = self.OPTIONAL_HEADER.DATA_DIRECTORY[
-                                       number_of_rva_and_sizes - 1].get_file_offset() + 8
+                number_of_rva_and_sizes - 1].get_file_offset() + 8
             remaining_entries = ((section_offset - last_offset_data_dir) // (2 * 4)) - 1
             offset = last_offset_data_dir
             current_data_directory_id = number_of_rva_and_sizes
@@ -311,6 +314,19 @@ class DotNetPEParser(PE):
     def metadata_dir_size(self) -> int:
         return self.clr_header.MetaDataDirectorySize.value
 
+    def are_stream_name_padding_bytes_patched(self, stream_name_bytes: bytes) -> None:
+        """
+        Check if the 0x0 padding/boundary bytes of a stream name were overwritten with random values
+        as done by some obfuscators like Spices .Net Obfuscator.
+        """
+        if not self.dotnet_anti_metadata['stream_name_padding_bytes_patched']:
+            try:
+                padding_bytes = stream_name_bytes.split(b'\x00', 1)[1]
+                if any(x != 0x0 for x in padding_bytes):
+                    self.dotnet_anti_metadata['stream_name_padding_bytes_patched'] = True
+            except Exception as e:
+                self.logger.warning(f'Stream name is invalid, .NET assembly is corrupted - {e}.')
+
     def parse_dotnet_stream_headers(self) -> None:
         metadata_stream_rva = self.clr_header.MetaDataDirectoryAddress.value
         metadata_hdr_size = self.dotnet_metadata_header.size
@@ -327,12 +343,15 @@ class DotNetPEParser(PE):
             '#us': False
         }
 
-        for i in range(num_streams):
+        for _ in range(num_streams):
             curr_stream_rva = metadata_stream_rva + metadata_hdr_size + cumulative_size
             # 0x100 is arbitrary large enough, but it is later trimmed anyway
             current_stream_bytes = self.get_data(curr_stream_rva, length=0x100)
             current_stream_header = DOTNET_STREAM_HEADER(curr_stream_rva, current_stream_bytes)
             current_stream_header.trim_byte_buffer()
+
+            # Check if the padding/boundary bytes are overwritten as done by some obfuscators
+            self.are_stream_name_padding_bytes_patched(current_stream_header.Name.value)
 
             self.dotnet_stream_headers.append(current_stream_header)
 
@@ -369,6 +388,18 @@ class DotNetPEParser(PE):
                 f'parsing stream: {current_stream_header_name} rva: 0x{current_stream_rva:x} '
                 f'size: 0x{current_stream_size:x}')
 
+    def _get_metadata_table_row_size(self, table_name: str,
+                                     current_row_rva: int,
+                                     row_type: Type[METADATA_TABLE_ROW]) -> int:
+        result = self.parse_metadata_table_row_size(current_row_rva, row_type)
+
+        # Monkey patch: Add 2 bytes for samples with TypeDef and no Field table or MethodDef and no Param table
+        if (table_name == 'TypeDef' and 'Field' not in self.dotnet_metadata_stream_header.table_names) or \
+                (table_name == 'MethodDef' and 'Param' not in self.dotnet_metadata_stream_header.table_names):
+            result += 2
+
+        return result
+
     def _get_metadata_table_rva(self) -> None:
         # This method currently cannot be bound to fast load as the correct table order must be
         # preserved to get the correct table addresses and thus the correct table data. Therefore,
@@ -383,13 +414,7 @@ class DotNetPEParser(PE):
             if row_type is None:
                 continue
 
-            # Ugly fixes for the edge(?) cases that a sample doesn't have a Field or Param table that is
-            # cross-referenced in the TypeRef or MethodDef table
-            if table_name == 'TypeDef' and 'Field' not in self.dotnet_metadata_stream_header.table_names or \
-                    table_name == 'MethodDef' and 'Param' not in self.dotnet_metadata_stream_header.table_names:
-                table_row_size = 14
-            else:
-                table_row_size = self.parse_metadata_table_row_size(current_row_rva, row_type)
+            table_row_size = self._get_metadata_table_row_size(table_name, current_row_rva, row_type)
 
             table_size = table_row_size * table_rows_num
             self.metadata_tables_rva[table_name] = current_row_rva
@@ -439,10 +464,10 @@ class DotNetPEParser(PE):
         else:
             metadata_tables = self.dotnet_metadata_stream_header.table_names
 
-        self._get_metadata_table_rva() # This part currently cannot be bound to fast load (see method)
+        self._get_metadata_table_rva()  # This part currently cannot be bound to fast load (see method)
         self.parse_metadata_tables(metadata_tables)
 
-    def parse_metadata_tables(self, metadata_tables: list) -> None:
+    def parse_metadata_tables(self, metadata_tables: List) -> None:
         """
         This parses all the metadata tables in the "#~/#-" stream
         """
@@ -462,9 +487,9 @@ class DotNetPEParser(PE):
                 error_string = f'Error attempting to parse metadata table: {table_name}'
                 self.logger.info(error_string)
                 self.logger.exception(e)
-                raise Exception(error_string)
+                raise Exception(error_string)  # pylint: disable=W0707
 
-    def parse_metadata_table_row_size(self, table_row_addr: int, row_type: Type[MODULE_TABLE_ROW]) -> int:
+    def parse_metadata_table_row_size(self, table_row_addr: int, row_type: Type[METADATA_TABLE_ROW]) -> int:
         """
         This is a little weird but tables + their rows are dynamically sized, so we don't know how big they are
         till after the objects parse them, so we need to calculate the size based on the first row
@@ -487,16 +512,10 @@ class DotNetPEParser(PE):
         if row_type is None:
             return None
 
-        # Ugly fixes for the edge(?) cases that a sample doesn't have a Field or Param table that is cross-referenced
-        # in the TypeRef or MethodDef table
-        if table_name == 'TypeDef' and 'Field' not in self.dotnet_metadata_stream_header.table_names or \
-                table_name == 'MethodDef' and 'Param' not in self.dotnet_metadata_stream_header.table_names:
-            table_row_size = 14
-        else:
-            table_row_size = self.parse_metadata_table_row_size(current_row_rva, row_type)
+        table_row_size = self._get_metadata_table_row_size(table_name, current_row_rva, row_type)
 
         all_rows_data = self.get_data(current_row_rva, table_row_size * num_rows)
-        for i in range(num_rows):
+        for _ in range(num_rows):
             table_row_addr = current_row_rva
             table_row_bytes = all_rows_data[current_row_rva - table_rva: current_row_rva - table_rva + table_row_size]
             table_row = row_type(self, table_row_addr, table_row_bytes)
@@ -685,12 +704,542 @@ class DotNetPEParser(PE):
 
             if current_string is not None and current_string_size > 1:
                 current_string_location = FileLocation(current_string_rva, current_string, current_string_size)
-                current_string_name = get_reasonable_display_string_for_bytes(current_string)
+                current_string_name = get_reasonable_display_unicode_string_for_bytes(current_string)
                 current_string_location.string_representation = current_string_name
 
                 self.dotnet_user_string_lookup[current_string_rva - stream.address] = current_string_location
 
             current_string_rva += current_string_size
+
+    @staticmethod
+    def _parse_blob_length(blob_bytes: bytes, offset: int = 0) -> Tuple[Optional[int], Optional[int]]:
+        if len(blob_bytes) <= offset:
+            return None, None
+
+        first_byte = blob_bytes[offset]
+
+        if (first_byte & 0x80) == 0:
+            return int(first_byte), 1
+        elif (first_byte & 0xC0) == 0x80:
+            if len(blob_bytes) < offset + 2:
+                return None, None
+            second_byte = blob_bytes[offset + 1]
+            length = ((first_byte & 0x3F) << 8) | second_byte
+            return length, 2
+        elif (first_byte & 0xE0) == 0xC0:
+            if len(blob_bytes) < offset + 4:
+                return None, None
+            second_byte = blob_bytes[offset + 1]
+            third_byte = blob_bytes[offset + 2]
+            fourth_byte = blob_bytes[offset + 3]
+            length = ((first_byte & 0x1F) << 24) | (second_byte << 16) | \
+                     (third_byte << 8) | fourth_byte
+            return length, 4
+        else:
+            return 0, 1
+
+    def _parse_ser_string(self, blob_bytes: bytes, offset: int) -> Tuple[Optional[str], int]:
+        length, bytes_consumed_by_len = self._parse_blob_length(blob_bytes, offset)
+        if length is None:
+            return None, 0
+
+        start_data_offset = offset + bytes_consumed_by_len
+
+        if length == 0xFF:
+            return None, bytes_consumed_by_len
+        elif length == 0x00:
+            return '', bytes_consumed_by_len
+        else:
+            if len(blob_bytes) < start_data_offset + length:
+                return None, 0
+            try:
+                s = blob_bytes[start_data_offset: start_data_offset + length].decode('utf-8')
+                return s, bytes_consumed_by_len + length
+            except UnicodeDecodeError:
+                try:
+                    s = blob_bytes[start_data_offset: start_data_offset + length].decode('latin-1')
+                    return f'<UTF-8 Decode Error, decoded as Latin-1: {s}>', bytes_consumed_by_len + length
+                except UnicodeDecodeError:
+                    return f'<Decoding Failed: {blob_bytes[start_data_offset: start_data_offset + length].hex()}>', \
+                        bytes_consumed_by_len + length
+
+    def _parse_typedef_or_ref_encoded(self, blob_bytes: bytes, offset: int) -> Tuple[Optional[Dict], int]:
+        compressed_val, bytes_consumed = self._parse_blob_length(blob_bytes, offset)
+        if compressed_val is None:
+            return None, 0
+
+        tag = compressed_val & 0x03
+        row_index = compressed_val >> 2
+
+        table_name = None
+        if tag == 0:
+            table_name = 'TypeDef'
+        elif tag == 1:
+            table_name = 'TypeRef'
+        elif tag == 2:
+            table_name = 'TypeSpec'
+
+        decoded_token = {'Table': table_name, 'RowId': row_index}
+        return decoded_token, bytes_consumed
+
+    def _parse_elem(self, blob_bytes: bytes, offset: int) -> Tuple[Any, int, str]:
+        start_offset = offset
+        if len(blob_bytes) <= start_offset:
+            return None, 0, 'EMPTY'
+
+        elem_type_byte = blob_bytes[start_offset]
+        current_offset = start_offset + 1
+        bytes_consumed_by_elem = 1
+        elem_type_name = SIGNATURE_ELEMENT_TYPES.get(elem_type_byte, f'UNKNOWN_TYPE_0x{elem_type_byte:02X}')
+
+        if elem_type_byte == SIGNATURE_ELEMENT_TYPES_REVERSE.get('BOOLEAN'):
+            if len(blob_bytes) < current_offset + 1:
+                return None, 0, elem_type_name
+            value = bool(blob_bytes[current_offset])
+            bytes_consumed_by_elem += 1
+        elif elem_type_byte == SIGNATURE_ELEMENT_TYPES_REVERSE.get('CHAR'):
+            if len(blob_bytes) < current_offset + 2:
+                return None, 0, elem_type_name
+            value = chr(struct.unpack('<H', blob_bytes[current_offset:current_offset + 2])[0])
+            bytes_consumed_by_elem += 2
+        elif elem_type_byte == SIGNATURE_ELEMENT_TYPES_REVERSE.get('I1'):
+            if len(blob_bytes) < current_offset + 1:
+                return None, 0, elem_type_name
+            value = struct.unpack('<b', blob_bytes[current_offset:current_offset + 1])[0]
+            bytes_consumed_by_elem += 1
+        elif elem_type_byte == SIGNATURE_ELEMENT_TYPES_REVERSE.get('U1'):
+            if len(blob_bytes) < current_offset + 1:
+                return None, 0, elem_type_name
+            value = blob_bytes[current_offset]
+            bytes_consumed_by_elem += 1
+        elif elem_type_byte == SIGNATURE_ELEMENT_TYPES_REVERSE.get('I2'):
+            if len(blob_bytes) < current_offset + 2:
+                return None, 0, elem_type_name
+            value = struct.unpack('<h', blob_bytes[current_offset:current_offset + 2])[0]
+            bytes_consumed_by_elem += 2
+        elif elem_type_byte == SIGNATURE_ELEMENT_TYPES_REVERSE.get('U2'):
+            if len(blob_bytes) < current_offset + 2:
+                return None, 0, elem_type_name
+            value = struct.unpack('<H', blob_bytes[current_offset:current_offset + 2])[0]
+            bytes_consumed_by_elem += 2
+        elif elem_type_byte == SIGNATURE_ELEMENT_TYPES_REVERSE.get('I4'):
+            if len(blob_bytes) < current_offset + 4:
+                return None, 0, elem_type_name
+            value = struct.unpack('<i', blob_bytes[current_offset:current_offset + 4])[0]
+            bytes_consumed_by_elem += 4
+        elif elem_type_byte == SIGNATURE_ELEMENT_TYPES_REVERSE.get('U4'):
+            if len(blob_bytes) < current_offset + 4:
+                return None, 0, elem_type_name
+            value = struct.unpack('<I', blob_bytes[current_offset:current_offset + 4])[0]
+            bytes_consumed_by_elem += 4
+        elif elem_type_byte == SIGNATURE_ELEMENT_TYPES_REVERSE.get('I8'):
+            if len(blob_bytes) < current_offset + 8:
+                return None, 0, elem_type_name
+            value = struct.unpack('<q', blob_bytes[current_offset:current_offset + 8])[0]
+            bytes_consumed_by_elem += 8
+        elif elem_type_byte == SIGNATURE_ELEMENT_TYPES_REVERSE.get('U8'):
+            if len(blob_bytes) < current_offset + 8:
+                return None, 0, elem_type_name
+            value = struct.unpack('<Q', blob_bytes[current_offset:current_offset + 8])[0]
+            bytes_consumed_by_elem += 8
+        elif elem_type_byte == SIGNATURE_ELEMENT_TYPES_REVERSE.get('R4'):
+            if len(blob_bytes) < current_offset + 4:
+                return None, 0, elem_type_name
+            value = struct.unpack('<f', blob_bytes[current_offset:current_offset + 4])[0]
+            bytes_consumed_by_elem += 4
+        elif elem_type_byte == SIGNATURE_ELEMENT_TYPES_REVERSE.get('R8'):
+            if len(blob_bytes) < current_offset + 8:
+                return None, 0, elem_type_name
+            value = struct.unpack('<d', blob_bytes[current_offset:current_offset + 8])[0]
+            bytes_consumed_by_elem += 8
+        elif elem_type_byte == SIGNATURE_ELEMENT_TYPES_REVERSE.get('STRING'):
+            s_val, s_len = self._parse_ser_string(blob_bytes, current_offset)
+            if s_val is None and s_len == 0:
+                return None, 0, elem_type_name
+            value = s_val
+            bytes_consumed_by_elem += s_len
+        elif elem_type_byte == SIGNATURE_ELEMENT_TYPES_REVERSE.get('OBJECT'):
+            if len(blob_bytes) < current_offset + 1:
+                return None, 0, elem_type_name
+            obj_val, obj_len, obj_type_name = self._parse_elem(blob_bytes, current_offset)
+            if obj_val is None and obj_len == 0:
+                value = f'<Error parsing System.Object at {current_offset}>'
+            else:
+                value = {'ObjectType': obj_type_name, 'Value': obj_val}
+            bytes_consumed_by_elem += obj_len
+        elif elem_type_byte == SIGNATURE_ELEMENT_TYPES_REVERSE.get('SZARRAY'):
+            if len(blob_bytes) < current_offset + 1:
+                return None, 0, elem_type_name
+            array_elem_type_byte = blob_bytes[current_offset]
+            current_offset += 1
+            bytes_consumed_by_elem += 1
+            array_elem_type_name = SIGNATURE_ELEMENT_TYPES.get(array_elem_type_byte,
+                                                               f'UNKNOWN_ARRAY_ELEM_TYPE_0x{array_elem_type_byte:02X}')
+            array_len_val, array_len_bytes_consumed = self._parse_blob_length(blob_bytes, current_offset)
+            if array_len_val is None:
+                return None, 0, elem_type_name
+            current_offset += array_len_bytes_consumed
+            bytes_consumed_by_elem += array_len_bytes_consumed
+            if array_len_val == 0xFFFFFFFF:
+                value = None
+            else:
+                array_elements = []
+                for _ in range(array_len_val):
+                    if len(blob_bytes) < current_offset + 1:
+                        return None, 0, elem_type_name
+                    temp_elem_bytes = bytes([array_elem_type_byte]) + blob_bytes[current_offset:]
+                    elem_val, elem_len_inner, _ = self._parse_elem(temp_elem_bytes, 0)
+                    if elem_val is None and elem_len_inner == 0:
+                        return None, 0, elem_type_name
+                    array_elements.append(elem_val)
+                    current_offset += (elem_len_inner - 1)
+                    bytes_consumed_by_elem += (elem_len_inner - 1)
+                value = {'ArrayElementType': array_elem_type_name, 'Elements': array_elements}
+        elif elem_type_byte == SIGNATURE_ELEMENT_TYPES_REVERSE.get('CA_TYPE_System.Type'):
+            s_val, s_len = self._parse_ser_string(blob_bytes, current_offset)
+            if s_val is None and s_len == 0:
+                return None, 0, elem_type_name
+            value = {'System.Type': s_val}
+            bytes_consumed_by_elem += s_len
+        elif elem_type_byte == SIGNATURE_ELEMENT_TYPES_REVERSE.get('CA_TYPE_Enum'):
+            enum_type_name, enum_type_name_len = self._parse_ser_string(blob_bytes, current_offset)
+            if enum_type_name is None and enum_type_name_len == 0:
+                return None, 0, elem_type_name
+            current_offset += enum_type_name_len
+            bytes_consumed_by_elem += enum_type_name_len
+
+            if len(blob_bytes) < current_offset + 4:
+                value = {'EnumTypeName': enum_type_name,
+                         'Value': f'<Incomplete Enum Value {blob_bytes[current_offset:].hex()}>'}
+                bytes_consumed_by_elem += len(
+                    blob_bytes) - current_offset
+            else:
+                enum_value = struct.unpack('<i', blob_bytes[current_offset:current_offset + 4])[0]
+                value = {'EnumTypeName': enum_type_name, 'Value': enum_value,
+                         'UnderlyingType_Guessed': 'I4'}
+                bytes_consumed_by_elem += 4
+        elif elem_type_byte == SIGNATURE_ELEMENT_TYPES_REVERSE.get('CA_TYPE_BoxedValue'):
+            inner_elem_val, inner_elem_len, inner_elem_type_name = self._parse_elem(blob_bytes, current_offset)
+            if inner_elem_val is None:
+                return None, 0, elem_type_name
+            value = {'BoxedType': inner_elem_type_name, 'Value': inner_elem_val}
+            bytes_consumed_by_elem += inner_elem_len
+        elif elem_type_byte in [
+            SIGNATURE_ELEMENT_TYPES_REVERSE.get('VALUETYPE'),
+            SIGNATURE_ELEMENT_TYPES_REVERSE.get('CLASS'),
+            SIGNATURE_ELEMENT_TYPES_REVERSE.get('PTR'),
+            SIGNATURE_ELEMENT_TYPES_REVERSE.get('BYREF'),
+            SIGNATURE_ELEMENT_TYPES_REVERSE.get('CMOD_REQD'),
+            SIGNATURE_ELEMENT_TYPES_REVERSE.get('CMOD_OPT'),
+        ]:
+            if elem_type_byte in [SIGNATURE_ELEMENT_TYPES_REVERSE.get('PTR'),
+                                  SIGNATURE_ELEMENT_TYPES_REVERSE.get('BYREF')]:
+                pointed_to_val, pointed_to_len, pointed_to_type_name = self._parse_elem(blob_bytes, current_offset)
+                if pointed_to_val is None and pointed_to_len == 0:
+                    return None, 0, elem_type_name
+                value = {'PointerType': elem_type_name, 'TargetType': pointed_to_val,
+                         'TargetTypeName': pointed_to_type_name}
+                bytes_consumed_by_elem += pointed_to_len
+            else:
+                token_val, token_len = self._parse_typedef_or_ref_encoded(blob_bytes, current_offset)
+                if token_val is None:
+                    return None, 0, elem_type_name
+                value = {'Type': elem_type_name, 'Token': token_val}
+                bytes_consumed_by_elem += token_len
+        elif elem_type_byte in [
+            SIGNATURE_ELEMENT_TYPES_REVERSE.get('VAR'),
+            SIGNATURE_ELEMENT_TYPES_REVERSE.get('MVAR')
+        ]:
+            index_val, index_len = self._parse_blob_length(blob_bytes, current_offset)
+            if index_val is None:
+                return None, 0, elem_type_name
+            value = {'GenericParameterType': elem_type_name, 'Index': index_val}
+            bytes_consumed_by_elem += index_len
+        elif elem_type_byte == SIGNATURE_ELEMENT_TYPES_REVERSE.get('ARRAY'):
+            value = f'<UNSUPPORTED_COMPLEX_TYPE: {elem_type_name} (0x{elem_type_byte:02X}) - ArrayShape parsing needed>'
+            bytes_to_consume = len(blob_bytes) - current_offset
+            if bytes_to_consume < 0:
+                bytes_to_consume = 0
+            bytes_consumed_by_elem += bytes_to_consume
+        elif elem_type_byte == SIGNATURE_ELEMENT_TYPES_REVERSE.get('GENERICINST'):
+            value = f'<UNSUPPORTED_COMPLEX_TYPE: {elem_type_name} (0x{elem_type_byte:02X}) - Generic Instance parsing needed>'
+            if len(blob_bytes) > current_offset:
+                current_offset += 1
+                bytes_consumed_by_elem += 1
+
+                token_val, token_len = self._parse_typedef_or_ref_encoded(blob_bytes, current_offset)
+                if token_val is not None:
+                    current_offset += token_len
+                    bytes_consumed_by_elem += token_len
+
+                    gen_arg_count_val, gen_arg_count_len = self._parse_blob_length(blob_bytes, current_offset)
+                    if gen_arg_count_val is not None:
+                        current_offset += gen_arg_count_len
+                        bytes_consumed_by_elem += gen_arg_count_len
+
+                        for _ in range(gen_arg_count_val):
+                            arg_val, arg_len, _ = self._parse_elem(blob_bytes, current_offset)
+                            if arg_val is None:
+                                break
+                            current_offset += arg_len
+                            bytes_consumed_by_elem += arg_len
+            value = {'GenericInstance': value, 'RawData': blob_bytes[start_offset:current_offset].hex()}
+        elif elem_type_byte == SIGNATURE_ELEMENT_TYPES_REVERSE.get('FNPTR'):
+            value = f'<UNSUPPORTED_COMPLEX_TYPE: {elem_type_name} (0x{elem_type_byte:02X}) - FunctionPointer signature needed>'
+            bytes_to_consume = len(blob_bytes) - current_offset
+            if bytes_to_consume < 0:
+                bytes_to_consume = 0
+            bytes_consumed_by_elem += bytes_to_consume
+        elif elem_type_byte == SIGNATURE_ELEMENT_TYPES_REVERSE.get('TYPEDBYREF'):
+            value = elem_type_name
+        elif elem_type_byte in [SIGNATURE_ELEMENT_TYPES_REVERSE.get('I'), SIGNATURE_ELEMENT_TYPES_REVERSE.get('U')]:
+            value = elem_type_name
+        elif elem_type_byte in [
+            SIGNATURE_ELEMENT_TYPES_REVERSE.get('END'),
+            SIGNATURE_ELEMENT_TYPES_REVERSE.get('VOID'),
+            SIGNATURE_ELEMENT_TYPES_REVERSE.get('INTERNAL'),
+            SIGNATURE_ELEMENT_TYPES_REVERSE.get('MODIFIER'),
+            SIGNATURE_ELEMENT_TYPES_REVERSE.get('SENTINEL'),
+            SIGNATURE_ELEMENT_TYPES_REVERSE.get('PINNED'),
+            SIGNATURE_ELEMENT_TYPES_REVERSE.get('Reserved'),
+            SIGNATURE_ELEMENT_TYPES_REVERSE.get('CA_FIELD'),
+            SIGNATURE_ELEMENT_TYPES_REVERSE.get('CA_PROPERTY'),
+        ]:
+            value = elem_type_name
+        else:
+            value = f'<UNRECOGNIZED_TYPE: {elem_type_name} (0x{elem_type_byte:02X}) at offset {start_offset}>'
+            bytes_to_consume = len(blob_bytes) - start_offset
+
+            if bytes_to_consume < 0:
+                bytes_to_consume = 0
+            bytes_consumed_by_elem = bytes_to_consume
+
+        return value, bytes_consumed_by_elem, elem_type_name
+
+    def _parse_fixed_arg(self, blob_bytes: bytes, offset: int, expected_type_element_value: int) -> Tuple[Any, int]:
+        temp_bytes_for_elem_parsing = bytes([expected_type_element_value]) + blob_bytes[offset:]
+        value, consumed_by_elem, _ = self._parse_elem(temp_bytes_for_elem_parsing, 0)
+
+        if value is None and consumed_by_elem == 0:
+            return None, 0
+
+        return value, consumed_by_elem - 1
+
+    def _parse_named_arg(self, blob_bytes: bytes, offset: int) -> Tuple[Optional[str], Optional[str], Any, int]:
+        start_offset = offset
+        if len(blob_bytes) <= start_offset:
+            return None, None, None, 0
+
+        member_kind_byte = blob_bytes[offset]
+        current_offset = offset + 1
+        bytes_consumed_by_named_arg = 1
+        member_kind = SIGNATURE_ELEMENT_TYPES.get(member_kind_byte, 'UNKNOWN_MEMBER_KIND')
+
+        if len(blob_bytes) < current_offset + 1:
+            return None, None, None, 0
+        arg_type_byte = blob_bytes[current_offset]
+        current_offset += 1
+        bytes_consumed_by_named_arg += 1
+
+        name_val, name_len = self._parse_ser_string(blob_bytes, current_offset)
+        if name_val is None and name_len == 0:
+            return None, None, None, 0
+
+        current_offset += name_len
+        bytes_consumed_by_named_arg += name_len
+
+        temp_bytes_for_elem_parsing = bytes([arg_type_byte]) + blob_bytes[current_offset:]
+        value_val, value_len, _ = self._parse_elem(temp_bytes_for_elem_parsing, 0)
+        if value_val is None and value_len == 0:
+            return None, None, None, 0
+
+        current_offset += (value_len - 1)
+        bytes_consumed_by_named_arg += (value_len - 1)
+
+        return member_kind, name_val, value_val, bytes_consumed_by_named_arg
+
+    def parse_custom_attribute_blob(self, blob_data_bytes: bytes, expected_fixed_arg_types: List) -> Dict:
+        parsed_content = {
+            'Prolog': None,
+            'FixedArguments': [],
+            'NumNamed': None,
+            'NamedArguments': [],
+            'RemainingBytes': None,
+            'ParseErrors': []
+        }
+        offset = 0
+
+        if len(blob_data_bytes) >= offset + 2:
+            prolog = struct.unpack('<H', blob_data_bytes[offset:offset + 2])[0]
+            if prolog != 0x0001:
+                parsed_content['ParseErrors'].append(
+                    f'Invalid CustomAttribute prolog: expected 0x0001, got 0x{prolog:04X}.')
+                return parsed_content
+            parsed_content['Prolog'] = prolog
+            offset += 2
+        else:
+            parsed_content['ParseErrors'].append(
+                f'Incomplete CustomAttribute blob: Not enough bytes for prolog (expected 2,'
+                f' got {len(blob_data_bytes) - offset}).')
+            return parsed_content
+
+        for i, expected_type_byte in enumerate(expected_fixed_arg_types):
+            if len(blob_data_bytes) <= offset:
+                parsed_content['ParseErrors'].append(
+                    f'Incomplete CustomAttribute blob: Not enough bytes for fixed argument {i}'
+                    f' (expected type 0x{expected_type_byte:02X}).')
+                break
+
+            fixed_arg_value, fixed_arg_consumed = self._parse_fixed_arg(blob_data_bytes, offset, expected_type_byte)
+
+            if fixed_arg_value is None and fixed_arg_consumed == 0:
+                parsed_content['ParseErrors'].append(
+                    f'Failed to parse fixed argument {i} with expected type 0x{expected_type_byte:02X}.'
+                    f' Remaining bytes: {blob_data_bytes[offset:].hex()}')
+                break
+
+            parsed_content['FixedArguments'].append(fixed_arg_value)
+            offset += fixed_arg_consumed
+
+        if len(blob_data_bytes) >= offset + 2:
+            num_named = struct.unpack('<H', blob_data_bytes[offset:offset + 2])[0]
+            parsed_content['NumNamed'] = num_named
+            offset += 2
+        elif len(blob_data_bytes) == offset:
+            parsed_content['NumNamed'] = 0
+        else:
+            parsed_content['ParseErrors'].append(
+                f'Incomplete CustomAttribute blob: Not enough bytes for NumNamed (expected 2,'
+                f' got {len(blob_data_bytes) - offset}).')
+            return parsed_content
+
+        for i in range(parsed_content['NumNamed']):
+            if len(blob_data_bytes) <= offset:
+                parsed_content['ParseErrors'].append(
+                    f'Incomplete CustomAttribute blob: Not enough bytes for named argument {i}.'
+                    f' Expected {parsed_content["NumNamed"]} named arguments, but blob ended prematurely.')
+                break
+
+            member_kind, name, value, consumed = self._parse_named_arg(blob_data_bytes, offset)
+            if member_kind is None:
+                parsed_content['ParseErrors'].append(
+                    f'Failed to parse named argument {i} at offset {offset}. Remaining bytes: '
+                    f'{blob_data_bytes[offset:].hex()}')
+                break
+
+            parsed_content['NamedArguments'].append({
+                'Kind': member_kind,
+                'Name': name,
+                'Value': value
+            })
+            offset += consumed
+
+        if len(blob_data_bytes) > offset:
+            parsed_content['RemainingBytes'] = blob_data_bytes[offset:].hex()
+            if all(b == 0 for b in blob_data_bytes[offset:]):
+                parsed_content['ParseErrors'].append('Trailing zero bytes (likely padding).')
+            else:
+                parsed_content['ParseErrors'].append(
+                    f"Unparsed trailing bytes: {parsed_content['RemainingBytes']} (Length: {len(blob_data_bytes) - offset} bytes).")
+
+        return parsed_content
+
+    def _parse_method_signature_blob(self, signature_blob_bytes: bytes) -> list:
+        offset = 0
+
+        if len(signature_blob_bytes) < offset + 1:
+            return []
+        calling_convention_byte = signature_blob_bytes[offset]
+        offset += 1
+
+        is_generic = (calling_convention_byte & 0x10) == 0x10
+
+        if is_generic:
+            gen_param_count, consumed = self._parse_blob_length(signature_blob_bytes, offset)
+            if gen_param_count is None:
+                return []
+            offset += consumed
+
+        param_count, consumed = self._parse_blob_length(signature_blob_bytes, offset)
+        if param_count is None:
+            return []
+        offset += consumed
+
+        _, ret_type_len, _ = self._parse_elem(signature_blob_bytes, offset)
+        offset += ret_type_len
+
+        fixed_arg_element_types = []
+        for _ in range(param_count):
+            if len(signature_blob_bytes) <= offset:
+                break
+
+            param_elem_type_byte = signature_blob_bytes[offset]
+            fixed_arg_element_types.append(param_elem_type_byte)
+
+            _, consumed_by_param_type, _ = self._parse_elem(signature_blob_bytes, offset)
+            offset += consumed_by_param_type
+
+        return fixed_arg_element_types
+
+    @staticmethod
+    def _get_signature_type(signature_blob_bytes: bytes) -> BlobSignatureType:
+        """
+        Recognizes the type of CLI signature blob based on its initial bytes.
+        """
+        if not signature_blob_bytes:
+            return BlobSignatureType.EMPTY
+
+        # 1. Custom Attribute Prologue (ECMA-335, II.23.3)
+        if len(signature_blob_bytes) >= 2 and struct.unpack('<H', signature_blob_bytes[0:2])[0] == 0x0001:
+            return BlobSignatureType.CUSTOM_ATTRIBUTE
+
+        first_byte = signature_blob_bytes[0]
+        call_kind_mask = 0x0F
+        call_conv_kind = first_byte & call_kind_mask
+
+        # 2. Method Signature Blobs (MethodDefSig, MethodRefSig, StandAloneMethodSig)
+        if call_conv_kind in [
+            CALLING_CONVENTIONS[0x00],
+            CALLING_CONVENTIONS[0x01],
+            CALLING_CONVENTIONS[0x02],
+            CALLING_CONVENTIONS[0x03],
+            CALLING_CONVENTIONS[0x04],
+            CALLING_CONVENTIONS[0x05]
+        ]:
+            if (first_byte & CALLING_CONVENTIONS[0x10]) == CALLING_CONVENTIONS[0x10]:
+                return BlobSignatureType.METHOD_GENERIC
+            else:
+                return BlobSignatureType.METHOD_NON_GENERIC
+
+        # 3. FieldSig (ECMA-335, II.23.2.4)
+        if first_byte == CALLING_CONVENTIONS[0x06]:
+            return BlobSignatureType.FIELD
+
+        # 4. PropertySig (ECMA-335, II.23.2.5)
+        if (first_byte & call_kind_mask) == CALLING_CONVENTIONS[0x08]:
+            return BlobSignatureType.PROPERTY
+
+        # 5. LocalVarSig (ECMA-335, II.23.2.6)
+        if first_byte == CALLING_CONVENTIONS[0x07]:
+            return BlobSignatureType.LOCAL_VAR
+
+        # 6. MethodSpecBlob (ECMA-335, II.23.2.15)
+        if first_byte == CALLING_CONVENTIONS[0x0A]:
+            return BlobSignatureType.METHOD_SPEC
+
+        # 7. TypeSpecBlob (ECMA-335, II.23.2.14)
+        if first_byte in [
+            SIGNATURE_ELEMENT_TYPES_REVERSE['PTR'],
+            SIGNATURE_ELEMENT_TYPES_REVERSE['ARRAY'],
+            SIGNATURE_ELEMENT_TYPES_REVERSE['SZARRAY'],
+            SIGNATURE_ELEMENT_TYPES_REVERSE['GENERICINST'],
+            SIGNATURE_ELEMENT_TYPES_REVERSE['FNPTR'],
+            SIGNATURE_ELEMENT_TYPES_REVERSE['CLASS'],
+            SIGNATURE_ELEMENT_TYPES_REVERSE['VALUETYPE'],
+        ]:
+            return BlobSignatureType.TYPE_SPEC
+
+        return BlobSignatureType.UNKNOWN
 
     def parse_blob_stream(self) -> None:
         stream = self.dotnet_stream_lookup[self.stream_names_map['#Blob']]
@@ -708,16 +1257,68 @@ class DotNetPEParser(PE):
 
             current_blob_bytes = current_blob_bytes[length_field_size:]
 
-            try:
-                current_blob_string = BLOB_SIGNATURES[current_blob_bytes]
-            except KeyError:
-                current_blob_string = {}
+            blob_signature = BLOB_SIGNATURES.get(current_blob_bytes)
+            if not blob_signature:
+                blob_signature = {}
 
-            current_blob_string_location = FileLocation(current_blob_rva, current_blob_string, current_blob_size)
-            current_blob_string_location.string_representation = current_blob_string
+            current_blob_data_structure = BlobDataStructure(
+                address=current_blob_rva,
+                byte_buffer=current_blob_bytes,
+                size=current_blob_size,
+                signature_type=self._get_signature_type(current_blob_bytes),
+                structure_fields=blob_signature
+            )
 
-            self.dotnet_blob_lookup[current_blob_rva - stream.address] = current_blob_string_location
+            self.dotnet_blob_lookup[current_blob_rva - stream.address] = current_blob_data_structure
             current_blob_rva += current_blob_size
+
+        # Skip custom attribute processing if the table doesn't exist
+        if 'CustomAttribute' not in self.metadata_tables_lookup:
+            return
+
+        # Build lookup dictionary for custom attributes
+        ca_table = self.metadata_tables_lookup['CustomAttribute']
+        custom_attributes_lookup = {
+            row.blob_stream_references['Value']: idx
+            for idx, row in enumerate(ca_table.table_rows)
+        }
+
+        # Process custom attribute blobs
+        for blob_index, blob_item in self.dotnet_blob_lookup.items():
+            if blob_item.structure_fields or blob_item.signature_type != BlobSignatureType.CUSTOM_ATTRIBUTE:
+                continue
+
+            table_row_idx = custom_attributes_lookup.get(blob_index)
+            if table_row_idx is None:
+                continue
+
+            try:
+                # Get the custom attribute table row
+                ca_row = ca_table.table_rows[table_row_idx]
+                table_references = getattr(ca_row, 'table_references', None)
+                if not table_references:
+                    continue
+
+                # Get the method that defines this attribute
+                type_ref = table_references.get('Type')
+                if not type_ref or type_ref[0] not in ('MethodDef', 'MemberRef'):
+                    continue
+
+                # Get method signature to determine expected argument types
+                table_name, row_num = type_ref
+                method_row = self.metadata_tables_lookup[table_name].table_rows[row_num - 1]
+                sig_index = method_row.blob_stream_references['Signature']
+                signature_bytes = self.dotnet_blob_lookup[sig_index].buffer
+
+                # Parse the method signature to get expected argument types
+                expected_fixed_arg_types = self._parse_method_signature_blob(signature_bytes)
+
+                # Parse the custom attribute blob with the expected argument types
+                self.dotnet_blob_lookup[blob_index].structure_fields = self.parse_custom_attribute_blob(
+                    blob_item.buffer, expected_fixed_arg_types)
+            except Exception as e:
+                self.logger.debug(
+                    f'Exception while parsing blob item {blob_index}, bytes {blob_item.buffer.hex()} - {e}')
 
     @staticmethod
     def get_max_rows(table_size_lookup: Dict[str: int], table_names: List[str]) -> int:
@@ -741,7 +1342,7 @@ class DotNetPEParser(PE):
 
         return 2, 'H'
 
-    def calculate_field_size_info(self, table_size_lookup: Dict[str: int]) -> dict:
+    def calculate_field_size_info(self, table_size_lookup: Dict[str: int]) -> Dict:
         field_size_info = {}
 
         for field_name in TABLE_ROW_VARIABLE_LENGTH_FIELDS:
@@ -767,13 +1368,20 @@ class DotNetPEParser(PE):
 
         return result
 
-    @staticmethod
-    def _read_serialized_string(string: bytes, encoding: str = 'utf-8') -> str:
+    def _read_serialized_string(self, string: bytes, encoding: str = 'utf-8') -> str:
+        encodings = [encoding, 'ISO-8859-1']
         result = ''
 
         if string:
             string_length_size, string_length = read_7bit_encoded_int32(string[:4])
-            result = string[string_length_size:string_length_size + string_length].decode(encoding)
+            for enc in encodings:
+                try:
+                    result = string[string_length_size:string_length_size + string_length].decode(enc)
+                    break
+                except UnicodeDecodeError as e:
+                    self.logger.info(
+                        f'Resource string ({enc}) decoding error, data seems to be corrupted - {e}. '
+                        f'Trying the next encoding.')
 
         return result
 
@@ -864,12 +1472,12 @@ class DotNetPEParser(PE):
                         next_i].Offset.value
                 else:
                     resource_end_rva = self.clr_header.ResourcesDirectoryAddress.value + \
-                                       self.clr_header.ResourcesDirectorySize.value
+                        self.clr_header.ResourcesDirectorySize.value
 
                 if self.get_dword_at_rva(resource_rva + 4) == 0xBEEFCACE:
                     # Resource Manager header
                     # Get resource manager header version
-                    resource_manager_header_version = self.get_dword_at_rva(resource_rva + 8)
+                    resource_manager_header_version = self.get_dword_at_rva(resource_rva + 8)  # noqa: F841 # pylint: disable=W0612
 
                     # Get the number of bytes to skip to remaining resource manager header (class names of
                     # IResourceReader and ResourceSet)
@@ -976,7 +1584,7 @@ class DotNetPEParser(PE):
                         # RuntimeResourceReader data section
                         # Get type and value (data) of each resource
                         sub_resources = []
-                        for l, (name, offset) in enumerate(name_offset_pairs_sorted.items()):
+                        for l, (name, offset) in enumerate(name_offset_pairs_sorted.items()):  # noqa: E741
                             sub_resource_entry = {}
                             sub_resource_start = resource_rva + 4 + offset
                             next_l = l + 1
@@ -988,7 +1596,7 @@ class DotNetPEParser(PE):
                                 # We skip the 0x0 alignment bytes between the end of the last sub-resource and the
                                 # beginning of the next resource
                                 if self.get_data(next_sub_resource_start - 1, 1) == b'\x00':
-                                    while 1:
+                                    while True:
                                         next_sub_resource_start -= 1
                                         if self.get_data(next_sub_resource_start, 1) != b'\x00':
                                             next_sub_resource_start += 1
@@ -997,7 +1605,7 @@ class DotNetPEParser(PE):
                             try:
                                 sub_resource_type_length, sub_resource_type = read_7bit_encoded_uint32(
                                     self.get_data(sub_resource_start, 4))
-                            except IndexError:
+                            except (IndexError, PEFormatError):
                                 self.logger.info('Sub-resource seems to be corrupt or missing.')
                                 continue
                             sub_resource_size_full = next_sub_resource_start - sub_resource_start
@@ -1014,18 +1622,16 @@ class DotNetPEParser(PE):
 
                             if sub_resource_type >= RESOURCE_TYPE_CODES['UserType']:
                                 sub_resource_entry['Type'] = 'UserType'
-                                user_type_details = user_types[sub_resource_type - RESOURCE_TYPE_CODES['UserType']]
-                                sub_resource_entry['TypeDetails'] = user_type_details
+                                if user_types:
+                                    user_type_details = user_types[sub_resource_type - RESOURCE_TYPE_CODES['UserType']]
+                                    sub_resource_entry['TypeDetails'] = user_type_details
                             else:
                                 sub_resource_entry['Type'] = sub_resource_type_name
 
                             sub_resource_entry['Size'] = sub_resource_size
                             sub_resource_entry['Data'] = sub_resource_data
-
                             sub_resources.append(sub_resource_entry)
-
                         resource_entry['SubResources'] = sub_resources
-
                     else:
                         self.logger.info(
                             f'.NET resource with reader header version {resource_reader_header_version} not supported.')

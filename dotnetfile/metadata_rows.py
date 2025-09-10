@@ -1,7 +1,9 @@
 """
 Part of dotnetfile
 
-Copyright (c) 2016, 2021-2023 - Bob Jung, Yaron Samuel, Dominik Reichel
+Original author:        Bob Jung - Palo Alto Networks (2016)
+Modified/Expanded by:   Yaron Samuel - Palo Alto Networks (2021-2022),
+                        Dominik Reichel - Palo Alto Networks (2021-2025)
 """
 
 import binascii
@@ -623,7 +625,7 @@ class PROPERTY_TABLE_ROW(METADATA_TABLE_ROW):
         Flags (a 2-byte bitmask of type PropertyAttributes)
         Name (index into String heap)
         Type (index into Blob heap) [the name of this column is misleading. It does not index a TypeDef or TypeRef
-            table - instead it indexes the signature in the Blob heap of the Property)
+            table - instead it indexes the signature in the Blob heap of the Property]
     """
     def __init__(self, pe, addr: int = None, byte_buffer: bytes = None):
         METADATA_TABLE_ROW.__init__(self, pe, addr, 'Property', byte_buffer)
@@ -1045,12 +1047,10 @@ class GENERIC_PARAM_CONSTRAINT_TABLE_ROW(METADATA_TABLE_ROW):
         self.Constraint = self.create_variable_length_table_reference('Constraint', 'TypeDefOrRef')
 
 
-"""
-This is a lookup table that we can use to get the row types when we're parsing each table of metadata rows in the
-metadata stream. There are several tables that are not documented in ECMA-335. However, the definitions can be found
-in metadata.c of the .NET runtime dotnetfile code:
-https://github.com/dotnet/runtime/blob/main/src/mono/mono/metadata/metadata.c
-"""
+# This is a lookup table that we can use to get the row types when we're parsing each table of metadata rows in the
+# metadata stream. There are several tables that are not documented in ECMA-335. However, the definitions can be found
+# in metadata.c of the .NET runtime dotnetfile code:
+# https://github.com/dotnet/runtime/blob/main/src/mono/mono/metadata/metadata.c
 METADATA_TYPE_LOOKUP: Dict[str, Any] = {
     'Module': MODULE_TABLE_ROW,
     'TypeRef': TYPE_REF_TABLE_ROW,

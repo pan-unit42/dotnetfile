@@ -1,5 +1,5 @@
 """
-Author: Dominik Reichel - Palo Alto Networks (2021-2023)
+Author: Dominik Reichel - Palo Alto Networks (2021-2025)
 
 dotnetfile - Interface library for the CLR header parser library for Windows .NET assemblies.
 
@@ -18,13 +18,15 @@ Thanks to the authors of the following tools and libraries:
 """
 
 from struct import unpack
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from hashlib import md5, sha1, sha256
 from enum import Enum, IntEnum, IntFlag, auto
-from typing import List, Dict, Optional, Union, Tuple
+from typing import List, Dict, Optional, Union, Tuple, Set
+
+from pefile import PEFormatError
 
 from .parser import DotNetPEParser
-from .constants import METADATA_TABLE_INDEXES, FAST_LOAD_TABLES_DEFAULT
+from .constants import METADATA_TABLE_INDEXES, FAST_LOAD_TABLES_DEFAULT, METADATA_TOKEN_TABLES
 
 
 METADATA_TABLES = {}
@@ -108,6 +110,15 @@ class Type:
         NESTEDFAMORASSEM = auto()
         ANY = auto()
 
+    class TypeDefClassSemantics(IntEnum):
+        """
+        Sources:
+        https://www.ecma-international.org/publications-and-standards/standards/ecma-335/
+        https://docs.microsoft.com/en-us/dotnet/api/system.reflection.typeattributes?view=net-5.0
+        """
+        CLASS = 0
+        INTERFACE = 32
+
     class UnmanagedFunctions(IntEnum):
         RAW = 0
         CHARSET = 1
@@ -172,9 +183,21 @@ class Struct:
         BuildNumber: int
         RevisionNumber: int
 
+    @dataclass
+    class StringToken:
+        stream: str
+        string_address: int
+        string: str = ''
+
+    @dataclass
+    class TableToken:
+        table: str
+        row: int
+        strings: Dict = field(default_factory=dict)
+
 
 class DotNetPE(DotNetPEParser):
-    def __init__(self, path: str, fast_load: str = '', fast_load_tables: list = FAST_LOAD_TABLES_DEFAULT):
+    def __init__(self, path: str, fast_load: str = '', fast_load_tables: List = FAST_LOAD_TABLES_DEFAULT):
         # Fast load options:
         # header_only      - Load only header data and skip metadata tables
         # normal           - Load header data and only metadata tables necessary for the interface library.
@@ -350,6 +373,18 @@ class DotNetPE(DotNetPEParser):
 
         return result
 
+    def is_reference_assembly(self) -> bool:
+        """
+        Check if the file is a reference assembly:
+        https://learn.microsoft.com/en-us/dotnet/standard/assembly/reference-assemblies
+        """
+        result = False
+
+        if 'ReferenceAssembly' in self.get_assembly_attributes():
+            result = True
+
+        return result
+
     def has_resources(self) -> bool:
         """
         Check if .NET resources exist.
@@ -481,6 +516,167 @@ class DotNetPE(DotNetPEParser):
         Get number of total streams (includes fake streams).
         """
         return self.dotnet_metadata_header.NumberOfStreams.value
+
+    def _resolve_token(self, token: int) -> Optional[Union[Struct.StringToken, Struct.TableToken]]:
+        """
+        Resolve a token to its TID (table index/#US stream) and RID (row index/string offset).
+        """
+        result = None
+
+        try:
+            tid = token >> 24
+            rid = token & 0xffffff
+            # Check if TID is 0x70 and thus referring to the #US heap (string token)
+            if tid == 0x70:
+                result = Struct.StringToken(stream='#US', string_address=rid)
+            # Check if TID is referring to a metadata token table
+            elif tid in (x >> 24 for x in METADATA_TOKEN_TABLES.keys()):
+                table = METADATA_TOKEN_TABLES[tid << 24]
+                if self.metadata_table_exists(table):
+                    result = Struct.TableToken(table=table, row=rid)
+        except Exception as e:
+            self.logger.info(f'Could not resolve token "{token}" - {e}.')
+
+        return result
+
+    def get_token_strings(self, token_string: str) -> Optional[Union[Struct.StringToken, Struct.TableToken]]:
+        """
+        Get all strings from a token 0x... (hex string). String(s) can be from a table row -> TableToken
+        or from #US stream offset -> StringToken.
+        """
+        token = int(token_string, 16)
+
+        result = self._resolve_token(token)
+        if isinstance(result, Struct.StringToken):
+            result.string = self.get_user_string(result.string_address)  # pylint: disable=W0201
+        elif isinstance(result, Struct.TableToken):
+            try:
+                row_data = self.metadata_tables_lookup[result.table].table_rows[result.row - 1]
+                if row_data.string_stream_references:
+                    for string_type, string_address in row_data.string_stream_references.items():
+                        result.strings[string_type] = self.get_string(string_address)
+            except Exception as e:
+                self.logger.info(f'Token "{token_string}" seems to be invalid - {e}.')
+                return None
+
+        return result
+
+    def get_assembly_attributes(self) -> Set[str]:
+        """
+        Get all assembly attributes from the CustomAttribute table.
+        """
+        result = set()
+
+        if self.metadata_table_exists('CustomAttribute'):
+            assembly_references = []
+            for table_row in self.metadata_tables_lookup['CustomAttribute'].table_rows:
+                if table_row.table_references['Parent'][0] == 'Assembly':
+                    assembly_ref = table_row.table_references['Type']
+                    assembly_references.append((assembly_ref[0], assembly_ref[1] - 1))
+
+            memberref_references = []
+            for assembly_reference in assembly_references:
+                if self.metadata_table_exists(assembly_reference[0]):
+                    if assembly_reference[0] == 'MemberRef':
+                        member_ref = self.metadata_tables_lookup[assembly_reference[0]].table_rows[
+                            assembly_reference[1]].table_references['Class']
+                        memberref_references.append((member_ref[0], member_ref[1] - 1))
+
+            string_references = []
+            for memberref_reference in memberref_references:
+                if self.metadata_table_exists(memberref_reference[0]):
+                    if memberref_reference[0] == 'TypeRef':
+                        string_references.append(self.metadata_tables_lookup[memberref_reference[0]].table_rows[
+                            memberref_reference[1]].string_stream_references['TypeName'])
+
+            for string_reference in string_references:
+                attribute_name = self.get_string(string_reference)
+                if attribute_name.endswith('Attribute'):
+                    attribute_name = attribute_name[:-9]
+                result.add(attribute_name)
+
+        return result
+
+    def get_assembly_attribute_value(self, attribute_name: str) -> str:
+        """
+        Get a specific attribute with details from the assembly.
+        """
+        result = ''
+
+        if not self.metadata_table_exists('CustomAttribute') or not self.metadata_table_exists('Assembly'):
+            return result
+
+        try:
+            assembly_name = self.Assembly.get_assembly_name()  # pylint: disable=E1101
+
+            for table_row in self.metadata_tables_lookup['CustomAttribute'].table_rows:
+                parent_ref = table_row.table_references['Parent']
+                if parent_ref[0] != 'Assembly':
+                    continue
+
+                type_ref = table_row.table_references['Type']
+                if type_ref[0] != 'MemberRef':
+                    continue
+
+                member_ref = self.metadata_tables_lookup[type_ref[0]].table_rows[type_ref[1] - 1]
+                if self.get_string(member_ref.string_stream_references['Name']) != '.ctor':
+                    continue
+
+                parent_row = self.metadata_tables_lookup[parent_ref[0]].table_rows[parent_ref[1] - 1]
+                if 'Name' not in parent_row.string_stream_references:
+                    continue
+
+                if self.get_string(parent_row.string_stream_references['Name']) != assembly_name:
+                    continue
+
+                class_ref = member_ref.table_references['Class']
+                type_name_address = self.metadata_tables_lookup[
+                    class_ref[0]].table_rows[class_ref[1] - 1].string_stream_references['TypeName']
+                type_name = self.get_string(type_name_address)
+
+                if type_name == attribute_name:
+                    result = self.dotnet_blob_lookup[table_row.Value.value].structure_fields['FixedArguments'][0]
+        except Exception as e:
+            self.logger.debug(f"Error getting custom attribute '{attribute_name}' - {e}")
+
+        return result
+
+    def get_assembly_attributes_with_values(self) -> Dict[Optional[str], str]:
+        """
+        Get assembly attributes with values.
+        References (assembly specific attributes):
+        https://learn.microsoft.com/en-us/dotnet/standard/assembly/set-attributes
+        https://learn.microsoft.com/en-us/dotnet/api/system.runtime.versioning.targetframeworkattribute
+        Not assembly specific attributes:
+        https://learn.microsoft.com/de-de/dotnet/api/system.runtime.interopservices.guidattribute
+        """
+        result = {}
+        attributes = [
+            'AssemblyCompanyAttribute',
+            'AssemblyConfigurationAttribute',
+            'AssemblyCopyrightAttribute',
+            'AssemblyCultureAttribute',
+            'AssemblyDefaultAliasAttribute',
+            'AssemblyDelaySignAttribute',
+            'AssemblyDescriptionAttribute',
+            'AssemblyFileVersionAttribute',
+            'AssemblyFlagsAttribute',
+            'AssemblyInformationalVersionAttribute',
+            'AssemblyKeyFileAttribute',
+            'AssemblyKeyNameAttribute',
+            'AssemblyProductAttribute',
+            'AssemblyTitleAttribute',
+            'AssemblyTrademarkAttribute',
+            'AssemblyVersionAttribute',
+            'TargetFrameworkAttribute',
+            'GuidAttribute'  # not assembly specific
+        ]
+
+        for attr in attributes:
+            key = attr.replace('Attribute', '')
+            result[key] = self.get_assembly_attribute_value(attr)
+
+        return result
 
 
 class AntiMetadataAnalysis:
@@ -630,6 +826,14 @@ class AntiMetadataAnalysis:
         """
         return self.dotnetpe.dotnet_anti_metadata['has_mixed_case_stream_names']
 
+    @property
+    def stream_name_padding_bytes_patched(self) -> bool:
+        """
+        Stream name padding/boundary bytes in the metadata header were overwritten with random values
+        instead of being 0x0.
+        """
+        return self.dotnetpe.dotnet_anti_metadata['stream_name_padding_bytes_patched']
+
 
 class Cor20Header:
     def __init__(self, dotnet_obj):
@@ -679,10 +883,10 @@ class Cor20Header:
 
         for type_with_method in types_with_methods:
             for method in type_with_method.Methods:
-                if method.Name == method_name and method.Signature == method_signature.string_representation:
+                if method.Name == method_name and method.Signature == method_signature.structure_fields:
                     result.Type = type_with_method.Type
                     result.Namespace = type_with_method.Namespace
-                    result.Signature = method_signature.string_representation
+                    result.Signature = method_signature.structure_fields
 
         return result
 
@@ -844,35 +1048,43 @@ class TypeDef:
     def _get_method_header_information(self, reader_pos: int) -> Tuple[int, int, int, int]:
         header_size, code_size, flags = 0, 0, 0
 
-        header_byte = unpack('B', self.dotnetpe.get_data(reader_pos, 1))[0]
-        reader_pos += 1
-        header_flag = header_byte & 7
+        if self._is_reader_position_valid(reader_pos):
+            header_data = self.dotnetpe.get_data(reader_pos, 1)
+            if header_data:
+                header_byte = unpack('B', header_data)[0]
+                reader_pos += 1
+                header_flag = header_byte & 7
 
-        if header_flag == 2 or header_flag == 6:
-            header_size = 1
-            code_size = header_byte >> 2
-        elif header_flag == 3:
-            flags = (unpack('B', self.dotnetpe.get_data(reader_pos, 1))[0] << 8) | header_byte
-            reader_pos += 3
-            header_size = flags >> 12
-            code_size = unpack('I', self.dotnetpe.get_data(reader_pos, 4))[0]
-            reader_pos += 8
+                if header_flag == 2 or header_flag == 6:
+                    header_size = 1
+                    code_size = header_byte >> 2
+                elif header_flag == 3:
+                    flags = (unpack('B', self.dotnetpe.get_data(reader_pos, 1))[0] << 8) | header_byte
+                    reader_pos += 3
+                    header_size = flags >> 12
+                    code_size = unpack('I', self.dotnetpe.get_data(reader_pos, 4))[0]
+                    reader_pos += 8
 
-            reader_pos = reader_pos - 12 + header_size * 4
+                    reader_pos = reader_pos - 12 + header_size * 4
 
-        if header_size < 3:
-            flags &= 0xFFF7
+                if header_size < 3:
+                    flags &= 0xFFF7
 
-        header_size *= 4
+                header_size *= 4
 
         return header_size, code_size, flags, reader_pos
 
     def _is_reader_position_valid(self, position: int) -> bool:
         result = True
 
-        if position > self.dotnetpe.file_size:
-            self.dotnetpe.logger.debug(f'Method reader at position "{position}" exceeds file size.')
+        try:
+            if self.dotnetpe.get_offset_from_rva(position) >= self.dotnetpe.file_size:
+                result = False
+        except PEFormatError:
             result = False
+
+        if not result:
+            self.dotnetpe.logger.debug(f'Method reader at position "{position}" (RVA) exceeds file size.')
 
         return result
 
@@ -948,14 +1160,13 @@ class TypeDef:
 
                 method_signature_index = methoddef_table_rows[j].Signature.value
                 try:
-                    method_signature = self.dotnetpe.dotnet_blob_lookup[method_signature_index].string_representation
+                    method_signature = self.dotnetpe.dotnet_blob_lookup[method_signature_index].structure_fields
                 except KeyError:
                     self.dotnetpe.logger.debug(f'Method signature index "{method_signature_index}" not available in '
                                                f'#Blob stream lookup table.')
                     method_signature = {}
 
                 method_flags = methoddef_table_rows[j].Flags.value
-
                 method_rva = methoddef_table_rows[j].RVA.value
 
                 if method_rva == 0:
@@ -1074,16 +1285,62 @@ class MethodDef:
                             for type_with_method in types_with_methods:
                                 for method in type_with_method.Methods:
                                     if method.Name == method_name and \
-                                            method.Signature == method_signature.string_representation:
+                                            method.Signature == method_signature.structure_fields:
                                         result.append(
-                                            Struct.EntryPoint(method_name, method_signature.string_representation,
+                                            Struct.EntryPoint(method_name, method_signature.structure_fields,
                                                               type_with_method.Type, type_with_method.Namespace))
 
         return result
 
+    @staticmethod
+    def _is_valid_entry_point_type(general_type: Struct.TypesMethods) -> bool:
+        """
+        Determine if a type can contain valid entry point methods.
+        """
+        # Check if type is a class and not an interface
+        type_class_semantics = general_type.Flags & Type.TypeDefMask.CLASSSEMANTIC
+        if not type_class_semantics == Type.TypeDefClassSemantics.CLASS:
+            return False
+
+        # Check if type is public (1) or nested public (2) and contains methods
+        type_visibility = general_type.Flags & Type.TypeDefMask.VISIBILITY
+        if not ((type_visibility == 1 or type_visibility == 2) and general_type.Methods):
+            return False
+
+        return True
+
+    @staticmethod
+    def _is_valid_entry_point_method(method: Struct.Methods) -> bool:
+        """
+        Determine if a method can be an entry point.
+        """
+        # Method must be public
+        if method.Flags & Type.MethodDefMask.MEMBERACCESS != 6:
+            return False
+
+        # Skip constructors
+        if method.Name in ['.ctor', '.cctor']:
+            return False
+
+        # Skip special property and event accessors
+        auto_generated_prefixes = ("set_", "get_", "add_", "remove_")
+        if method.Name.startswith(auto_generated_prefixes):
+            return False
+
+        # Skip special names and delegate methods
+        is_special_name = method.Flags & Type.MethodDefMask.SPECIALNAME == Type.MethodDefMask.SPECIALNAME
+        is_virtual = method.Flags & Type.MethodDefMask.VIRTUAL == Type.MethodDefMask.VIRTUAL
+        is_delegate_method = method.Name in ['Invoke', 'BeginInvoke', 'EndInvoke']
+
+        if (is_special_name and method.Name.startswith(auto_generated_prefixes)) or \
+                (is_virtual and (is_delegate_method or method.Name.startswith(auto_generated_prefixes))):
+            return False
+
+        return True
+
     def get_entry_points(self) -> List[Optional[Struct.EntryPoint]]:
         """
-        Get possible entry points along with their types, namespaces and parameters.
+        Get possible entry point methods along with their types, namespaces and parameters.
 
         TODO: Add more blob signatures or create proper blob signature decoding
         """
@@ -1095,20 +1352,17 @@ class MethodDef:
         all_types = self.dotnetpe.TypeDef.get_type_names_with_methods()
 
         for general_type in all_types:
-            type_flag = general_type.Flags & Type.TypeDefMask.VISIBILITY
+            if not self._is_valid_entry_point_type(general_type):
+                continue
 
-            # Check if type is public (1) or nested public (2) and contains methods
-            if (type_flag == 1 or type_flag == 2) and general_type.Methods:
-                for method in general_type.Methods:
-                    # Check if MemberAccess is public
-                    if method.Flags & Type.MethodDefMask.MEMBERACCESS == 6:
-                        if method.Name not in ['.ctor', '.cctor']:
-                            if not ((method.Flags & Type.MethodDefMask.SPECIALNAME == Type.MethodDefMask.SPECIALNAME and
-                                     method.Name.startswith(("set_", "get_", "add_", "remove_"))) or
-                                    (method.Flags & Type.MethodDefMask.VIRTUAL == Type.MethodDefMask.VIRTUAL and
-                                     method.Name in ['Invoke', 'BeginInvoke', 'EndInvoke'])):
-                                result.append(Struct.EntryPoint(method.Name, method.Signature, general_type.Type,
-                                              general_type.Namespace))
+            for method in general_type.Methods:
+                if self._is_valid_entry_point_method(method):
+                    result.append(Struct.EntryPoint(
+                        method.Name,
+                        method.Signature,
+                        general_type.Type,
+                        general_type.Namespace
+                    ))
 
         return result
 
@@ -1121,7 +1375,7 @@ class MemberRef:
 
     def get_memberref_names(self, deduplicate: bool = False) -> List[str]:
         """
-        Get a list of reference names to Methods and Field of a class.
+        Get a list of referenced methods and fields of a class.
         """
         result = []
 
@@ -1133,6 +1387,62 @@ class MemberRef:
 
         if deduplicate:
             result = list(set(result))
+
+        return result
+
+    def get_fully_qualified_memberref_names(self, deduplicate: bool = False, strings_sorted: bool = False) -> List[str]:
+        """
+        Get a list of referenced methods/fields with their fully qualified names (namespace.typename::method).
+        """
+        result = []
+
+        for table_row in self.dotnetpe.metadata_tables_lookup['MemberRef'].table_rows:
+            try:
+                name_string_address = table_row.string_stream_references['Name']
+                name_string = self.dotnetpe.get_string(name_string_address)
+                if not name_string:
+                    continue
+
+                if name_string.startswith("."):
+                    name_string = name_string[1:]
+
+                class_table = table_row.table_references['Class'][0]
+                class_index = table_row.table_references['Class'][1] - 1
+
+                if class_index < 0 or class_index >= len(
+                        self.dotnetpe.metadata_tables_lookup.get(class_table, {}).table_rows):
+                    continue
+
+                if class_table not in ["TypeRef", "TypeDef"]:
+                    continue
+
+                type_name_address = self.dotnetpe.metadata_tables_lookup[
+                    class_table].table_rows[class_index].string_stream_references['TypeName']
+                type_namespace_address = self.dotnetpe.metadata_tables_lookup[
+                    class_table].table_rows[class_index].string_stream_references['TypeNamespace']
+
+                type_name = self.dotnetpe.get_string(type_name_address)
+                type_namespace = self.dotnetpe.get_string(type_namespace_address)
+
+                if type_name.startswith("."):
+                    type_name = type_name[1:]
+
+                full_type_name = type_namespace
+                if type_namespace and type_name:
+                    full_type_name += "."
+                full_type_name += type_name
+
+                if full_type_name:
+                    result.append(f"{full_type_name}::{name_string}")
+            except (KeyError, IndexError, AttributeError) as e:
+                self.dotnetpe.logger.debug(f"Error processing MemberRef: {e}")
+                continue
+
+        if deduplicate:
+            result = list(set(result))
+
+        if strings_sorted:
+            result.sort(key=lambda x: (x.split('::')[1] if '::' in x else x).lower())
 
         return result
 
@@ -1153,7 +1463,7 @@ class MemberRef:
             - Strings unsorted or sorted (after the reference names)
         """
         tables_names = []
-        for current_row_index, table_row in enumerate(self.dotnetpe.metadata_tables_lookup['MemberRef'].table_rows):
+        for _, table_row in enumerate(self.dotnetpe.metadata_tables_lookup['MemberRef'].table_rows):
             name_string_address = table_row.string_stream_references['Name']
             name_string = self.dotnetpe.get_string(name_string_address)
 
@@ -1321,7 +1631,39 @@ class AssemblyRef:
                 result.append(assembly_name)
 
         if deduplicate:
-            result = list(set(result))
+            result = list(dict.fromkeys(result))
+
+        return result
+
+    def get_assemblyref_names_with_versions(self, deduplicate: bool = False) -> Dict[str, Union[str, List[str]]]:
+        """
+        Get a dictionary of referenced assembly names and their versions.
+        """
+        result = {}
+        seen_pairs = set()
+
+        for table_row in self.dotnetpe.metadata_tables_lookup['AssemblyRef'].table_rows:
+            string_address = table_row.string_stream_references['Name']
+            if string_address:
+                assembly_name = self.dotnetpe.get_string(string_address)
+                version = (f'{table_row.MajorVersion.value}.{table_row.MinorVersion.value}.'
+                           f'{table_row.BuildNumber.value}.{table_row.RevisionNumber.value}')
+
+                if deduplicate:
+                    pair = (assembly_name, version)
+                    if pair in seen_pairs:
+                        continue
+                    seen_pairs.add(pair)
+
+                if assembly_name in result:
+                    current = result[assembly_name]
+                    if isinstance(current, list):
+                        if version not in current:
+                            current.append(version)
+                    elif current != version:
+                        result[assembly_name] = [current, version]
+                else:
+                    result[assembly_name] = version
 
         return result
 

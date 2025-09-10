@@ -1,8 +1,16 @@
-"""
+'''
 Part of dotnetfile
 
-Copyright (c) 2016, 2021-2023 - Bob Jung, Yaron Samuel, Dominik Reichel
-"""
+Original author:        Bob Jung - Palo Alto Networks (2016)
+Modified/Expanded by:   Yaron Samuel - Palo Alto Networks (2021-2022),
+                        Dominik Reichel - Palo Alto Networks (2021-2025)
+'''
+
+# flake8: noqa
+
+from enum import Enum
+from typing import Union, Tuple
+
 
 # Max string length reference:
 # https://github.com/dotnet/roslyn/blob/main/src/Compilers/Core/Portable/PEWriter/MetadataWriter.cs#L51
@@ -154,6 +162,32 @@ METADATA_TABLE_FLAGS = {
     4503599627370496:   'CustomDebugInformation'
 }
 
+METADATA_TOKEN_TABLES = {
+    0x00000000: 'Module',
+    0x01000000: 'TypeRef',
+    0x02000000: 'TypeDef',
+    0x04000000: 'Field',
+    0x06000000: 'MethodDef',
+    0x08000000: 'Param',
+    0x09000000: 'InterfaceImpl',
+    0x0A000000: 'MemberRef',
+    0x0C000000: 'CustomAttribute',
+    0x0E000000: 'DeclSecurity',
+    0x11000000: 'StandAloneSig',
+    0x14000000: 'Event',
+    0x17000000: 'Property',
+    0x1A000000: 'ModuleRef',
+    0x1B000000: 'TypeSpec',
+    0x20000000: 'Assembly',
+    0x23000000: 'AssemblyRef',
+    0x26000000: 'File',
+    0x27000000: 'ExportedType',
+    0x28000000: 'ManifestResource',
+    0x2A000000: 'GenericParam',
+    0x2B000000: 'MethodSpec',
+    0x2C000000: 'GenericParamConstraint'
+}
+
 RESOURCE_TYPE_CODES = {
     'Null':         0,
     'String':       1,
@@ -177,90 +211,152 @@ RESOURCE_TYPE_CODES = {
     'UserType':     64
 }
 
-BLOB_SIGNATURES = {
-    b'\x06\x05': {'hasthis': False, 'return': 'System.Byte', 'parameter': ()},
-    b'\x06\x07': {'hasthis': False, 'return': 'System.UInt16', 'parameter': ()},
-    b'\x06\x08': {'hasthis': False, 'return': 'System.Int32', 'parameter': ()},
-    b'\x06\x09': {'hasthis': False, 'return': 'System.UInt32', 'parameter': ()},
-    b'\x06\x0B': {'hasthis': False, 'return': 'System.UInt64', 'parameter': ()},
-    b'\x00\x00\x01': {'hasthis': False, 'return': 'System.Void', 'parameter': ()},
-    b'\x00\x00\x02': {'hasthis': False, 'return': 'System.Boolean', 'parameter': ()},
-    b'\x00\x00\x0E': {'hasthis': False, 'return': 'System.String', 'parameter': ()},
-    b'\x06\x0F\x05': {'hasthis': False, 'return': 'System.Byte*', 'parameter': ()},
-    b'\x06\x0F\x09': {'hasthis': False, 'return': 'System.UInt32*', 'parameter': ()},
-    b'\x20\x00\x01': {'hasthis': True, 'return': 'System.Void', 'parameter': ()},
-    b'\x20\x00\x02': {'hasthis': True, 'return': 'System.Boolean', 'parameter': ()},
-    b'\x20\x00\x08': {'hasthis': True, 'return': 'System.Int32', 'parameter': ()},
-    b'\x20\x00\x0A': {'hasthis': True, 'return': 'System.Int64', 'parameter': ()},
-    b'\x20\x00\x0E': {'hasthis': True, 'return': 'System.String', 'parameter': ()},
-    b'\x00\x01\x01\x08': {'hasthis': False, 'return': 'System.Void', 'parameter': 'System.Int32'},
-    b'\x00\x01\x01\x18': {'hasthis': False, 'return': 'System.Void', 'parameter': 'System.IntPtr'},
-    b'\x00\x01\x01\x1C': {'hasthis': False, 'return': 'System.Void', 'parameter': 'System.Object'},
-    b'\x00\x01\x07\x07': {'hasthis': False, 'return': 'System.UInt16', 'parameter': 'System.UInt16'},
-    b'\x00\x01\x08\x09': {'hasthis': False, 'return': 'System.Int32', 'parameter': 'System.UInt32'},
-    b'\x00\x01\x08\x0A': {'hasthis': False, 'return': 'System.Int32', 'parameter': 'System.Int64'},
-    b'\x00\x01\x09\x02': {'hasthis': False, 'return': 'System.UInt32', 'parameter': 'System.Boolean'},
-    b'\x00\x01\x18\x08': {'hasthis': False, 'return': 'System.IntPtr', 'parameter': 'System.Int32'},
-    b'\x00\x01\x18\x09': {'hasthis': False, 'return': 'System.IntPtr', 'parameter': 'System.UInt32'},
-    b'\x20\x00\x0F\x01': {'hasthis': True, 'return': 'System.Void*', 'parameter': ()},
-    b'\x20\x01\x01\x02': {'hasthis': True, 'return': 'System.Void', 'parameter': 'System.Boolean'},
-    b'\x20\x01\x01\x08': {'hasthis': True, 'return': 'System.Void', 'parameter': 'System.Int32'},
-    b'\x20\x01\x01\x0A': {'hasthis': True, 'return': 'System.Void', 'parameter': 'System.Int64'},
-    b'\x20\x01\x01\x0E': {'hasthis': True, 'return': 'System.Void', 'parameter': 'System.String'},
-    b'\x20\x01\x03\x08': {'hasthis': True, 'return': 'System.Char', 'parameter': 'System.Int32'},
-    b'\x00\x00\x20\x39\x02': {'hasthis': False, 'return': 'System.Boolean', 'parameter': ()},
-    b'\x00\x01\x01\x1D\x0E': {'hasthis': False, 'return': 'System.Void', 'parameter': 'System.String[]'},
-    b'\x00\x01\x08\x1D\x05': {'hasthis': False, 'return': 'System.Int32', 'parameter': 'System.Byte[]'},
-    b'\x00\x01\x09\x0F\x05': {'hasthis': False, 'return': 'System.UInt32', 'parameter': 'System.Byte*'},
-    b'\x00\x01\x0E\x1D\x0E': {'hasthis': False, 'return': 'System.String', 'parameter': 'System.String[]'},
-    b'\x00\x01\x0F\x01\x18': {'hasthis': False, 'return': 'System.Void*', 'parameter': 'System.IntPtr'},
-    b'\x00\x01\x12\x51\x0E': {'hasthis': False, 'return': 'System.IO.FileStream', 'parameter': 'System.String'},
-    b'\x00\x01\x1D\x05\x0E': {'hasthis': False, 'return': 'System.Byte[]', 'parameter': 'System.String'},
-    b'\x00\x02\x01\x09\x18': {'hasthis': False, 'return': 'System.Void',
-                              'parameter': ('System.UInt32', 'System.InPtr')},
-    b'\x00\x02\x08\x08\x0E': {'hasthis': False, 'return': 'System.Int32',
-                              'parameter': ('System.Int32', 'System.String')},
-    b'\x20\x01\x01\x0F\x01': {'hasthis': True, 'return': 'System.Void', 'parameter': 'System.Void*'},
-    b'\x20\x01\x01\x11\x1D': {'hasthis': True, 'return': 'System.Void',
-                              'parameter': 'System.Security.Permissions.SecurityAction'},
-    b'\x20\x01\x01\x11\x6D': {'hasthis': True, 'return': 'System.Void',
-                              'parameter': 'System.Runtime.InteropServices.LayoutKind'},
-    b'\x20\x01\x09\x12\x11': {'hasthis': True, 'return': 'System.UInt32', 'parameter': 'System.IAsyncResult'},
-    b'\x20\x02\x01\x0E\x0E': {'hasthis': True, 'return': 'System.Void',
-                              'parameter': ('System.String', 'System.String')},
-    b'\x20\x02\x01\x1C\x18': {'hasthis': True, 'return': 'System.Void',
-                              'parameter': ('System.Object', 'System.IntPtr')},
-    b'\x00\x01\x12\x41\x11\x45': {'hasthis': False, 'return': 'System.Type', 'parameter': 'System.RuntimeTypeHandle'},
-    b'\x00\x02\x02\x0E\x0F\x05': {'hasthis': False, 'return': 'System.Boolean',
-                                  'parameter': ('System.String', 'System.Byte*')},
-    b'\x00\x02\x09\x09\x0F\x05': {'hasthis': False, 'return': 'System.UInt32',
-                                  'parameter': ('System.UInt32', 'System.Byte*')},
-    b'\x00\x03\x08\x09\x09\x09': {'hasthis': False, 'return': 'System.Int32',
-                                  'parameter': ('System.UInt32', 'System.UInt32', 'System.UInt32')},
-    b'\x20\x02\x01\x12\x41\x08': {'hasthis': True, 'return': 'System.Void',
-                                  'parameter': ('System.Type', 'System.Int32')},
-    b'\x20\x03\x01\x08\x08\x08': {'hasthis': True, 'return': 'System.Void',
-                                  'parameter': ('System.Int32', 'System.Int32', 'System.Int32')},
-    b'\x20\x03\x09\x09\x09\x09': {'hasthis': True, 'return': 'System.UInt32',
-                                  'parameter': ('System.UInt32', 'System.UInt32', 'System.UInt32')},
-    b'\x00\x02\x01\x12\x61\x11\x65': {'hasthis': False, 'return': 'System.Void',
-                                      'parameter': ('System.Array', 'System.RuntimeFieldHandle')},
-    b'\x00\x02\x12\x49\x18\x12\x41': {'hasthis': False, 'return': 'System.Delegate',
-                                      'parameter': ('System.IntPtr', 'System.Type')},
-    b'\x00\x03\x01\x0F\x05\x05\x09': {'hasthis': False, 'return': 'System.Void',
-                                      'parameter': ('System.Byte*', 'System.Byte', 'System.UInt32')},
-    b'\x00\x04\x09\x09\x09\x09\x09': {'hasthis': False, 'return': 'System.UInt32', 'parameter': (
-        'System.UInt32', 'System.UInt32', 'System.UInt32', 'System.UInt32')},
-    b'\x20\x03\x08\x1D\x05\x08\x08': {'hasthis': True, 'return': 'System.Int32',
-                                      'parameter': ('System.Byte[]', 'System.Int32', 'System.Int32')},
-    b'\x20\x03\x09\x08\x08\x08\x0D': {'hasthis': True, 'return': 'System.UInt32',
-                                      'parameter': ('System.Int32', 'System.Int32', 'System.Int32')},
-    b'\x00\x03\x01\x0F\x05\x0F\x05\x09': {'hasthis': False, 'return': 'System.Void',
-                                          'parameter': ('System.Byte*', 'System.Byte*', 'System.UInt32')},
-    b'\x00\x03\x0F\x05\x0F\x05\x09\x09': {'hasthis': False, 'return': 'System.Byte*',
-                                          'parameter': ('System.Byte*', 'System.UInt32', 'System.UInt32')},
-    b'\x00\x04\x08\x09\x09\x09\x0F\x09': {'hasthis': False, 'return': 'System.Int32',
-                                          'parameter': ('System.UInt32', 'System.UInt32', 'System.UInt32*')},
-    b'\x20\x05\x12\x11\x09\x09\x09\x12\x15\x1C': {'hasthis': True, 'return': 'System.IAsyncResult', 'parameter': (
-        'System.UInt32', 'System.UInt32', 'System.UInt32', 'System.AsyncCallback', 'System.Object')},
+SIGNATURE_ELEMENT_TYPES = {
+    0x00: 'END',
+    0x01: 'VOID',
+    0x02: 'BOOLEAN',
+    0x03: 'CHAR',
+    0x04: 'I1',
+    0x05: 'U1',
+    0x06: 'I2',
+    0x07: 'U2',
+    0x08: 'I4',
+    0x09: 'U4',
+    0x0A: 'I8',
+    0x0B: 'U8',
+    0x0C: 'R4',
+    0x0D: 'R8',
+    0x0E: 'STRING',
+    0x0F: 'PTR',
+    0x10: 'BYREF',
+    0x11: 'VALUETYPE',
+    0x12: 'CLASS',
+    0x13: 'VAR',
+    0x14: 'ARRAY',
+    0x15: 'GENERICINST',
+    0x16: 'TYPEDBYREF',
+    0x18: 'I',
+    0x19: 'U',
+    0x1B: 'FNPTR',
+    0x1C: 'OBJECT',
+    0x1D: 'SZARRAY',
+    0x1E: 'MVAR',
+    0x1F: 'CMOD_REQD',
+    0x20: 'CMOD_OPT',
+    0x21: 'INTERNAL',
+    0x40: 'MODIFIER',
+    0x41: 'SENTINEL',
+    0x45: 'PINNED',
+    0x50: 'CA_TYPE_System.Type',
+    0x51: 'CA_TYPE_BoxedValue',
+    0x52: 'Reserved',
+    0x53: 'CA_FIELD',
+    0x54: 'CA_PROPERTY',
+    0x55: 'CA_TYPE_Enum',
 }
+
+SIGNATURE_ELEMENT_TYPES_REVERSE = {v: k for k, v in SIGNATURE_ELEMENT_TYPES.items()}
+
+
+def _blob_signature_helper(hasthis: bool, ret: str, params: Union[Tuple, str] = ()):
+    return {
+        'hasthis': hasthis,
+        'return': ret,
+        'parameter': params if isinstance(params, Tuple) else (params,) if params else ()
+    }
+
+
+BLOB_SIGNATURES = {
+    b'\x06\x05': _blob_signature_helper(False, 'System.Byte'),
+    b'\x06\x07': _blob_signature_helper(False, 'System.UInt16'),
+    b'\x06\x08': _blob_signature_helper(False, 'System.Int32'),
+    b'\x06\x09': _blob_signature_helper(False, 'System.UInt32'),
+    b'\x06\x0B': _blob_signature_helper(False, 'System.UInt64'),
+    b'\x00\x00\x01': _blob_signature_helper(False, 'System.Void'),
+    b'\x00\x00\x02': _blob_signature_helper(False, 'System.Boolean'),
+    b'\x00\x00\x0E': _blob_signature_helper(False, 'System.String'),
+    b'\x06\x0F\x05': _blob_signature_helper(False, 'System.Byte*'),
+    b'\x06\x0F\x09': _blob_signature_helper(False, 'System.UInt32*'),
+    b'\x20\x00\x01': _blob_signature_helper(True, 'System.Void'),
+    b'\x20\x00\x02': _blob_signature_helper(True, 'System.Boolean'),
+    b'\x20\x00\x08': _blob_signature_helper(True, 'System.Int32'),
+    b'\x20\x00\x0A': _blob_signature_helper(True, 'System.Int64'),
+    b'\x20\x00\x0E': _blob_signature_helper(True, 'System.String'),
+    b'\x00\x01\x01\x08': _blob_signature_helper(False, 'System.Void', 'System.Int32'),
+    b'\x00\x01\x01\x18': _blob_signature_helper(False, 'System.Void', 'System.IntPtr'),
+    b'\x00\x01\x01\x1C': _blob_signature_helper(False, 'System.Void', 'System.Object'),
+    b'\x00\x01\x07\x07': _blob_signature_helper(False, 'System.UInt16', 'System.UInt16'),
+    b'\x00\x01\x08\x09': _blob_signature_helper(False, 'System.Int32', 'System.UInt32'),
+    b'\x00\x01\x08\x0A': _blob_signature_helper(False, 'System.Int32', 'System.Int64'),
+    b'\x00\x01\x09\x02': _blob_signature_helper(False, 'System.UInt32', 'System.Boolean'),
+    b'\x00\x01\x18\x08': _blob_signature_helper(False, 'System.IntPtr', 'System.Int32'),
+    b'\x00\x01\x18\x09': _blob_signature_helper(False, 'System.IntPtr', 'System.UInt32'),
+    b'\x20\x00\x0F\x01': _blob_signature_helper(True, 'System.Void*'),
+    b'\x20\x01\x01\x02': _blob_signature_helper(True, 'System.Void', 'System.Boolean'),
+    b'\x20\x01\x01\x08': _blob_signature_helper(True, 'System.Void', 'System.Int32'),
+    b'\x20\x01\x01\x0A': _blob_signature_helper(True, 'System.Void', 'System.Int64'),
+    b'\x20\x01\x01\x0E': _blob_signature_helper(True, 'System.Void', 'System.String'),
+    b'\x20\x01\x03\x08': _blob_signature_helper(True, 'System.Char', 'System.Int32'),
+    b'\x00\x00\x20\x39\x02': _blob_signature_helper(False, 'System.Boolean'),
+    b'\x00\x01\x01\x1D\x0E': _blob_signature_helper(False, 'System.Void', 'System.String[]'),
+    b'\x00\x01\x08\x1D\x05': _blob_signature_helper(False, 'System.Int32', 'System.Byte[]'),
+    b'\x00\x01\x09\x0F\x05': _blob_signature_helper(False, 'System.UInt32', 'System.Byte*'),
+    b'\x00\x01\x0E\x1D\x0E': _blob_signature_helper(False, 'System.String', 'System.String[]'),
+    b'\x00\x01\x0F\x01\x18': _blob_signature_helper(False, 'System.Void*', 'System.IntPtr'),
+    b'\x00\x01\x12\x51\x0E': _blob_signature_helper(False, 'System.IO.FileStream', 'System.String'),
+    b'\x00\x01\x1D\x05\x0E': _blob_signature_helper(False, 'System.Byte[]', 'System.String'),
+    b'\x00\x02\x01\x09\x18': _blob_signature_helper(False, 'System.Void', ('System.UInt32', 'System.InPtr')),
+    b'\x00\x02\x08\x08\x0E': _blob_signature_helper(False, 'System.Int32', ('System.Int32', 'System.String')),
+    b'\x20\x01\x01\x0F\x01': _blob_signature_helper(True, 'System.Void', 'System.Void*'),
+    b'\x20\x01\x01\x11\x1D': _blob_signature_helper(True, 'System.Void', 'System.Security.Permissions.SecurityAction'),
+    b'\x20\x01\x01\x11\x6D': _blob_signature_helper(True, 'System.Void', 'System.Runtime.InteropServices.LayoutKind'),
+    b'\x20\x01\x09\x12\x11': _blob_signature_helper(True, 'System.UInt32', 'System.IAsyncResult'),
+    b'\x20\x02\x01\x0E\x0E': _blob_signature_helper(True, 'System.Void', ('System.String', 'System.String')),
+    b'\x20\x02\x01\x1C\x18': _blob_signature_helper(True, 'System.Void', ('System.Object', 'System.IntPtr')),
+    b'\x00\x01\x12\x41\x11\x45': _blob_signature_helper(False, 'System.Type', 'System.RuntimeTypeHandle'),
+    b'\x00\x02\x02\x0E\x0F\x05': _blob_signature_helper(False, 'System.Boolean', ('System.String', 'System.Byte*')),
+    b'\x00\x02\x09\x09\x0F\x05': _blob_signature_helper(False, 'System.UInt32', ('System.UInt32', 'System.Byte*')),
+    b'\x00\x03\x08\x09\x09\x09': _blob_signature_helper(False, 'System.Int32', ('System.UInt32', 'System.UInt32', 'System.UInt32')),
+    b'\x20\x02\x01\x12\x41\x08': _blob_signature_helper(True, 'System.Void', ('System.Type', 'System.Int32')),
+    b'\x20\x03\x01\x08\x08\x08': _blob_signature_helper(True, 'System.Void', ('System.Int32', 'System.Int32', 'System.Int32')),
+    b'\x20\x03\x09\x09\x09\x09': _blob_signature_helper(True, 'System.UInt32', ('System.UInt32', 'System.UInt32', 'System.UInt32')),
+    b'\x00\x02\x01\x12\x61\x11\x65': _blob_signature_helper(False, 'System.Void', ('System.Array', 'System.RuntimeFieldHandle')),
+    b'\x00\x02\x12\x49\x18\x12\x41': _blob_signature_helper(False, 'System.Delegate', ('System.IntPtr', 'System.Type')),
+    b'\x00\x03\x01\x0F\x05\x05\x09': _blob_signature_helper(False, 'System.Void', ('System.Byte*', 'System.Byte', 'System.UInt32')),
+    b'\x00\x04\x09\x09\x09\x09\x09': _blob_signature_helper(False, 'System.UInt32', ('System.UInt32', 'System.UInt32', 'System.UInt32', 'System.UInt32')),
+    b'\x20\x03\x08\x1D\x05\x08\x08': _blob_signature_helper(True, 'System.Int32', ('System.Byte[]', 'System.Int32', 'System.Int32')),
+    b'\x20\x03\x09\x08\x08\x08\x0D': _blob_signature_helper(True, 'System.UInt32', ('System.Int32', 'System.Int32', 'System.Int32')),
+    b'\x00\x03\x01\x0F\x05\x0F\x05\x09': _blob_signature_helper(False, 'System.Void', ('System.Byte*', 'System.Byte*', 'System.UInt32')),
+    b'\x00\x03\x0F\x05\x0F\x05\x09\x09': _blob_signature_helper(False, 'System.Byte*', ('System.Byte*', 'System.UInt32', 'System.UInt32')),
+    b'\x00\x04\x08\x09\x09\x09\x0F\x09': _blob_signature_helper(False, 'System.Int32', ('System.UInt32', 'System.UInt32', 'System.UInt32*')),
+    b'\x20\x05\x12\x11\x09\x09\x09\x12\x15\x1C': _blob_signature_helper(True, 'System.IAsyncResult', ('System.UInt32', 'System.UInt32', 'System.UInt32', 'System.AsyncCallback', 'System.Object'))
+}
+
+CALLING_CONVENTIONS = {
+    0x00: 'DEFAULT',
+    0x01: 'C',
+    0x02: 'STDCALL',
+    0x03: 'THISCALL',
+    0x04: 'FASTCALL',
+    0x05: 'VARARG',
+    0x06: 'FIELD',
+    0x07: 'LOCAL_SIG',
+    0x08: 'PROPERTY',
+    0x0A: 'GENRICINST_SPEC',
+    0x10: 'GENERIC',
+    0x20: 'HASTHIS',
+    0x40: 'EXPLICITTHIS'
+}
+
+
+class BlobSignatureType(Enum):
+    EMPTY = 'Empty'
+    CUSTOM_ATTRIBUTE = 'CustomAttribute'
+    METHOD_NON_GENERIC = 'Method (Non-Generic)'
+    METHOD_GENERIC = 'Method (Generic)'
+    FIELD = 'Field'
+    PROPERTY = 'Property'
+    LOCAL_VAR = 'LocalVar'
+    METHOD_SPEC = 'MethodSpec'
+    TYPE_SPEC = 'TypeSpec'
+    UNKNOWN = 'Unknown'

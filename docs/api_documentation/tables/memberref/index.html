@@ -4,10 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <meta name="turbo-root" content="/pan-unit42/dotnetfile">
-    <meta name="turbo-cache-control" content="no-cache" data-turbo-track="reload" data-track-token="3.1.0.744997725663">
+    <meta name="turbo-cache-control" content="no-cache" data-turbo-track="reload" data-track-token="3.6.0.810808355411">
 
     <!-- See retype.com -->
-    <meta name="generator" content="Retype 3.1.0">
+    <meta name="generator" content="Retype 3.6.0">
 
     <!-- Primary Meta Tags -->
     <title>MemberRef - dotnetfile API documentation</title>
@@ -29,14 +29,14 @@
     <meta property="twitter:title" content="MemberRef - dotnetfile API documentation">
     <meta property="twitter:description" content="The MemberRef table contains various information about referenced members.">
 
-    <script data-cfasync="false">(function () { var el = document.documentElement, m = localStorage.getItem("/pan-unit42/dotnetfile/doc_theme"), wm = window.matchMedia; if (m === "dark" || (!m && wm && wm("(prefers-color-scheme: dark)").matches)) { el.classList.add("dark") } else { el.classList.remove("dark") } })();</script>
+    <script data-cfasync="false">(function () { var el = document.documentElement, m = localStorage.getItem("doc_theme"), wm = window.matchMedia; if (m === "dark" || (!m && wm && wm("(prefers-color-scheme: dark)").matches)) { el.classList.add("dark") } else { el.classList.remove("dark") } })();</script>
 
-    <link href="../../../resources/css/retype.css?v=3.1.0.744997725663" rel="stylesheet">
+    <link href="../../../resources/css/retype.css?v=3.6.0.810808355411" rel="stylesheet">
 
-    <script data-cfasync="false" src="../../../resources/js/config.js?v=3.1.0.744997725663" data-turbo-eval="false" defer></script>
-    <script data-cfasync="false" src="../../../resources/js/retype.js?v=3.1.0" data-turbo-eval="false" defer></script>
-    <script id="lunr-js" data-cfasync="false" src="../../../resources/js/lunr.js?v=3.1.0.744997725663" data-turbo-eval="false" defer></script>
-    <script id="prism-js" data-cfasync="false" src="../../../resources/js/prism.js?v=3.1.0.744997725663" defer></script>
+    <script data-cfasync="false" src="../../../resources/js/config.js?v=3.6.0.810808355411" data-turbo-eval="false" defer></script>
+    <script data-cfasync="false" src="../../../resources/js/retype.js?v=3.6.0" data-turbo-eval="false" defer></script>
+    <script id="lunr-js" data-cfasync="false" src="../../../resources/js/lunr.js?v=3.6.0.810808355411" data-turbo-eval="false" defer></script>
+    <script id="prism-js" data-cfasync="false" src="../../../resources/js/prism.js?v=3.6.0.810808355411" defer></script>
 </head>
 <body>
     <div id="docs-app" class="relative text-base antialiased text-gray-700 bg-white font-body dark:bg-dark-850 dark:text-dark-300">
@@ -198,7 +198,6 @@
                             <div class="docs-markdown" id="docs-content">
                                 <!-- Rendered if sidebar right is enabled -->
                                 <div id="docs-sidebar-right-toggle"></div>
-                
                                 <!-- Page content  -->
 <doc-anchor-target id="memberref" class="break-words">
     <h1>
@@ -214,12 +213,12 @@
     </h3>
 </doc-anchor-target>
 <div class="codeblock-wrapper"><doc-codeblock>
-<pre class="language-python"><code v-pre class="language-python">MemberRef.get_memberref_names(deduplicate: bool) -&gt; List[str]:</code></pre>
+<pre class="language-python"><code v-pre class="language-python">MemberRef.get_memberref_names(deduplicate: bool) -&gt; List[str]</code></pre>
 </doc-codeblock></div>
 <p>Get a list of referenced member names.</p>
 <p><strong>Parameters:</strong></p>
 <ul>
-<li><span class="no-link inline-flex items-center justify-center font-medium leading-none whitespace-nowrap text-gray-600 dark:text-dark-600 bg-gray-200 h-6 px-2 text-xs rounded-md">
+<li><span class="no-link inline-flex align-middle items-center justify-center font-medium leading-none whitespace-nowrap text-gray-600 dark:text-dark-600 bg-gray-200 h-6 px-2 text-xs rounded-md">
     <span>deduplicate</span>
 </span> De-duplicate names (off by default)</li>
 </ul>
@@ -243,6 +242,45 @@ if dotnet_file.metadata_table_exists('MemberRef'):
         print(f'{memberref_name}')</code></pre>
 </doc-codeblock></div>
 <hr>
+<doc-anchor-target id="get-fully-qualified-referenced-member-names">
+    <h3>
+        <doc-anchor-trigger class="header-anchor-trigger" to="#get-fully-qualified-referenced-member-names">#</doc-anchor-trigger>
+        <span>Get fully qualified referenced member names</span>
+    </h3>
+</doc-anchor-target>
+<div class="codeblock-wrapper"><doc-codeblock>
+<pre class="language-python"><code v-pre class="language-python">MemberRef.get_fully_qualified_memberref_names(deduplicate: bool, strings_sorted: bool) -&gt; List[str]</code></pre>
+</doc-codeblock></div>
+<p>Get a list of referenced methods/fields with their fully qualified names (namespace.typename::method).</p>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><span class="no-link inline-flex align-middle items-center justify-center font-medium leading-none whitespace-nowrap text-gray-600 dark:text-dark-600 bg-gray-200 h-6 px-2 text-xs rounded-md">
+    <span>deduplicate</span>
+</span> De-duplicate names (off by default)</li>
+<li><span class="no-link inline-flex align-middle items-center justify-center font-medium leading-none whitespace-nowrap text-gray-600 dark:text-dark-600 bg-gray-200 h-6 px-2 text-xs rounded-md">
+    <span>strings_sorted</span>
+</span> Sort list by method name (off by default)</li>
+</ul>
+<p><strong>Return value:</strong></p>
+<p>A list with fully qualified member names</p>
+<p><strong>Example:</strong></p>
+<div class="codeblock-wrapper"><doc-codeblock line-numbers>
+<pre class="language-python"><code v-pre class="language-python"># Import class DotNetPE from module dotnetfile
+from dotnetfile import DotNetPE
+
+# Create an instance of DotNetPE with the file path as a parameter
+dotnet_file = DotNetPE('/Users/&lt;username&gt;/my_dotnet_assembly.exe')
+
+# Check if the &quot;MemberRef&quot; table exists
+if dotnet_file.metadata_table_exists('MemberRef'):
+    # Get list of all fully qualified member names (sorted)
+    fq_memberref_names = dotnet_file.MemberRef.get_fully_qualified_memberref_names(deduplicate=True, strings_sorted=True)
+
+    # Print out the member names
+    for fq_memberref_name in fq_memberref_names:
+        print(f'{fq_memberref_name}')</code></pre>
+</doc-codeblock></div>
+<hr>
 <doc-anchor-target id="get-memberref-hash">
     <h3>
         <doc-anchor-trigger class="header-anchor-trigger" to="#get-memberref-hash">#</doc-anchor-trigger>
@@ -250,7 +288,7 @@ if dotnet_file.metadata_table_exists('MemberRef'):
     </h3>
 </doc-anchor-target>
 <div class="codeblock-wrapper"><doc-codeblock>
-<pre class="language-python"><code v-pre class="language-python">MemberRef.get_memberref_hash(hash_type: Type.Hash, strings_sorted: bool) -&gt; str:</code></pre>
+<pre class="language-python"><code v-pre class="language-python">MemberRef.get_memberref_hash(hash_type: Type.Hash, strings_sorted: bool) -&gt; str</code></pre>
 </doc-codeblock></div>
 <p>The <code v-pre>MemberRef</code> hash is a hash of reference (to methods and fields of a class) and table names of their corresponding classes. We take the table name of the belonging class and the reference name to create a string pair separated by a &quot;-&quot; character. This table&lt;-&gt;name string pair is added to a list and the hash value is calculated at the end. The class always belongs to one of the five tables &#x27;TypeDef&#x27;, &#x27;TypeRef&#x27;, &#x27;ModuleRef&#x27;, &#x27;MethodDef&#x27; or &#x27;TypeSpec&#x27;.</p>
 <p>The list of table and reference names can be sorted alphabetically after the reference names before being hashed. Strings are used case-sensitive.</p>
@@ -272,22 +310,22 @@ if dotnet_file.metadata_table_exists('MemberRef'):
 </div>
 <p><strong>Parameters:</strong></p>
 <ul>
-<li><span class="no-link inline-flex items-center justify-center font-medium leading-none whitespace-nowrap text-gray-600 dark:text-dark-600 bg-gray-200 h-6 px-2 text-xs rounded-md">
+<li><span class="no-link inline-flex align-middle items-center justify-center font-medium leading-none whitespace-nowrap text-gray-600 dark:text-dark-600 bg-gray-200 h-6 px-2 text-xs rounded-md">
     <span>hash_type</span>
 </span> Hash algortihm. Options:
 <ul>
-<li><span class="no-link inline-flex items-center justify-center font-medium leading-none whitespace-nowrap text-gray-700 dark:text-dark-600 bg-white border border-gray-300 dark:border-transparent h-6 px-2 text-xs rounded-md">
+<li><span class="no-link inline-flex align-middle items-center justify-center font-medium leading-none whitespace-nowrap text-gray-700 dark:text-dark-600 bg-white border border-gray-300 dark:border-transparent h-6 px-2 text-xs rounded-md">
     <span>Type.Hash.MD5</span>
 </span></li>
-<li><span class="no-link inline-flex items-center justify-center font-medium leading-none whitespace-nowrap text-gray-700 dark:text-dark-600 bg-white border border-gray-300 dark:border-transparent h-6 px-2 text-xs rounded-md">
+<li><span class="no-link inline-flex align-middle items-center justify-center font-medium leading-none whitespace-nowrap text-gray-700 dark:text-dark-600 bg-white border border-gray-300 dark:border-transparent h-6 px-2 text-xs rounded-md">
     <span>Type.Hash.SHA1</span>
 </span></li>
-<li><span class="no-link inline-flex items-center justify-center font-medium leading-none whitespace-nowrap text-gray-700 dark:text-dark-600 bg-white border border-gray-300 dark:border-transparent h-6 px-2 text-xs rounded-md">
+<li><span class="no-link inline-flex align-middle items-center justify-center font-medium leading-none whitespace-nowrap text-gray-700 dark:text-dark-600 bg-white border border-gray-300 dark:border-transparent h-6 px-2 text-xs rounded-md">
     <span>Type.Hash.SHA256</span>
 </span> (on by default)</li>
 </ul>
 </li>
-<li><span class="no-link inline-flex items-center justify-center font-medium leading-none whitespace-nowrap text-gray-600 dark:text-dark-600 bg-gray-200 h-6 px-2 text-xs rounded-md">
+<li><span class="no-link inline-flex align-middle items-center justify-center font-medium leading-none whitespace-nowrap text-gray-600 dark:text-dark-600 bg-gray-200 h-6 px-2 text-xs rounded-md">
     <span>strings_sorted</span>
 </span> Sort string pairs alphabetically after the referenced member names (off by default)</li>
 </ul>
@@ -353,7 +391,7 @@ if dotnet_file.metadata_table_exists('MemberRef'):
                                         </li>
                                     </ul>
                                 </div>
-                                <div class="docs-copyright py-2 text-gray-500 dark:text-dark-350 text-sm leading-relaxed"><p>© Dominik Reichel (Palo Alto Networks) 2022-2023 – All rights reserved</p></div>
+                                <div class="docs-copyright py-2 text-gray-500 dark:text-dark-350 text-sm leading-relaxed"><p>© Dominik Reichel (Palo Alto Networks) 2022-2025 – All rights reserved</p></div>
                             </footer>
                         </div>
                     </div>
@@ -382,6 +420,6 @@ if dotnet_file.metadata_table_exists('MemberRef'):
 
     <div id="docs-overlay-target"></div>
 
-    <script data-cfasync="false">window.__DOCS__ = { "title": "MemberRef", level: 3, icon: "file", hasPrism: true, hasMermaid: false, hasMath: false }</script>
+    <script data-cfasync="false">window.__DOCS__ = { "title": "MemberRef", level: 3, icon: "file", hasPrism: true, hasMermaid: false, hasMath: false, tocDepth: 23 }</script>
 </body>
 </html>
