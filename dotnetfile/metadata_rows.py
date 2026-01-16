@@ -21,17 +21,22 @@ def get_blob_location_for_offset(pe, offset: int):
     This sort of just cheats and returns a DWORD for now since we haven't done the extra legwork in figuring out the
     lengths of every single variable
     """
-    # I'm just going to go with 4 bytes for now...
-    blob_location_size = 4
-
     blob_stream = pe.dotnet_stream_lookup.get(b'#Blob', None)
     if blob_stream is not None:
         blob_stream_rva = blob_stream.address - pe.address
         blob_location_rva = blob_stream_rva + offset
         blob_location_addr = blob_stream.address + offset
-        blob_location_bytes = pe.executable_bytes[blob_location_rva:blob_location_rva + blob_location_size]
 
         if offset < blob_stream.size:
+            # properly parse the length
+            blob_length_bytes = pe.executable_bytes[blob_location_rva:blob_location_rva + 4]
+            # DotNetPEParser holds the static method
+            from .parser import DotNetPEParser
+            blob_length, length_field_size = DotNetPEParser._get_stream_sequence_length(blob_length_bytes)
+
+            blob_location_size = blob_length + length_field_size
+            blob_location_bytes = pe.executable_bytes[blob_location_rva:blob_location_rva + blob_location_size]
+
             blob_location = FileLocation(blob_location_addr, blob_location_bytes, blob_location_size)
             blob_location.string_representation = binascii.hexlify(blob_location_bytes)
             return blob_location
@@ -40,8 +45,10 @@ def get_blob_location_for_offset(pe, offset: int):
 
 
 def get_guid_location_for_offset(pe, offset: int):
-    # I'm just going to go with 4 bytes for now...
-    guid_location_size = 4
+    # GUIDs are always 16 bytes.
+    # Note: offset here is often a 1-based index in Metadata tables, 
+    # but the caller seems to pass it as a byte offset.
+    guid_location_size = 16
     guid_stream = pe.dotnet_stream_lookup.get(b'#GUID', None)
     if guid_stream is not None:
         guid_location_rva = guid_stream.address + offset
