@@ -10,22 +10,21 @@ import logging
 
 
 def initialize_logging(logger_name: str, level: int = logging.DEBUG) -> logging.Logger:
-    logging_level = level
-    curr_logger = logging.getLogger(logger_name)
+    logger = logging.getLogger(logger_name)
 
-    if not curr_logger.hasHandlers():
-        curr_logger.setLevel(logging_level)
+    if not logger.hasHandlers():
+        logger.setLevel(level)
 
         formatter = logging.Formatter(
             '%(levelname)s - %(process)d - %(asctime)s - %(filename)s - %(lineno)d - %(message)s')
 
         console_handler = logging.StreamHandler()
-        console_handler.setLevel(logging_level)
+        console_handler.setLevel(level)
         console_handler.setFormatter(formatter)
-        curr_logger.addHandler(console_handler)
-        curr_logger.propagate = False
+        logger.addHandler(console_handler)
+        logger.propagate = False
 
-    return curr_logger
+    return logger
 
 
 def get_logger(logger_name: str, level: int = logging.DEBUG) -> logging.Logger:

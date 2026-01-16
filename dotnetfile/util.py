@@ -99,12 +99,12 @@ def read_null_terminated_byte_string(byte_buffer, limit: int = 128) -> Optional[
     return None
 
 
-def read_reasonable_string(byte_buffer, limit: int = 128) -> Optional[str]:
+def read_reasonable_string(byte_buffer: bytes, limit: int = 128) -> Optional[str]:
     """
     This attempts to read a null terminated ASCII string from the supplied buffer. This is useful parsing strings from
     PE headers that should be well-formed.
     """
-    null_terminated_string = bytes()
+    null_terminated_string = bytearray()
     search_buffer = byte_buffer[:limit]
 
     for b in search_buffer:
@@ -114,7 +114,9 @@ def read_reasonable_string(byte_buffer, limit: int = 128) -> Optional[str]:
         if b not in REASONABLE_CHARACTER_BYTES:
             return None
 
-        null_terminated_string += bytes(chr(b), 'utf-8')
+        null_terminated_string.append(b)
+
+    return None
 
 
 def bytes_to_ascii(byte_str: Union[str, bytes]) -> Union[str, bytes]:
@@ -147,7 +149,7 @@ def make_string_readable(field_string: Union[str, bytes]) -> Union[str, bytes]:
     sneaking in.
     """
     # trim off any strings that are all nulls
-    trimmed_field_string = field_string.replace('\x00', '').replace('\\u0000', '').replace('\\u0000', '')
+    trimmed_field_string = field_string.replace('\x00', '').replace('\\u0000', '')
 
     try:
         ascii_field_string = trimmed_field_string.encode('ascii')
