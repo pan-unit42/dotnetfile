@@ -392,12 +392,6 @@ class DotNetPEParser(PE):
                                      current_row_rva: int,
                                      row_type: Type[METADATA_TABLE_ROW]) -> int:
         result = self.parse_metadata_table_row_size(current_row_rva, row_type)
-
-        # Monkey patch: Add 2 bytes for samples with TypeDef and no Field table or MethodDef and no Param table
-        if (table_name == 'TypeDef' and 'Field' not in self.dotnet_metadata_stream_header.table_names) or \
-                (table_name == 'MethodDef' and 'Param' not in self.dotnet_metadata_stream_header.table_names):
-            result += 2
-
         return result
 
     def _get_metadata_table_rva(self) -> None:

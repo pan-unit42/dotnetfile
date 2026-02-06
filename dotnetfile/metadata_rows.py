@@ -126,21 +126,18 @@ class METADATA_TABLE_ROW(BinaryStructure):
         """
         Creates a reference to a row in another table
         """
-        if table_name not in self.pe.dotnet_metadata_stream_header.table_size_lookup:
-            self.logger.debug(f'Table: {table_name} not defined in .NET header')
-            return None
+        # If table is missing in the lookup, treat as 0 rows,
+        # but still read the field
+        num_rows = self.pe.dotnet_metadata_stream_header.table_size_lookup.get(table_name, 0)
 
-        field_size = 2
-        struct_string = 'H'
-        num_rows = self.pe.dotnet_metadata_stream_header.table_size_lookup[table_name]
         if num_rows >= 65536:
-            field_size = 4
-            struct_string = 'I'
+            field_size, struct_string = 4, 'I'
+        else:
+            field_size, struct_string = 2, 'H'
 
         field_value = self.create_field_value(field_name, field_size, struct_string)
 
         self.table_references[field_name] = (table_name, field_value.value)
-
         return field_value
 
     def create_variable_length_table_reference(self, field_name: str, type_name_param: Optional[str] = None):
