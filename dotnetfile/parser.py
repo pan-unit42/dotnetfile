@@ -1,7 +1,7 @@
 """
 Original author:        Bob Jung - Palo Alto Networks (2016)
 Modified/Expanded by:   Yaron Samuel - Palo Alto Networks (2021-2022),
-                        Dominik Reichel - Palo Alto Networks (2021-2025)
+                        Dominik Reichel - Palo Alto Networks (2021-2026)
 
 dotnetfile - CLR header parsing library for Windows .NET PE files.
 
@@ -34,7 +34,7 @@ from pathlib import PurePath
 
 from .util import (read_null_terminated_byte_string, get_reasonable_display_string_for_bytes, FileLocation,
                    read_7bit_encoded_uint32, read_7bit_encoded_int32, get_reasonable_display_unicode_string_for_bytes,
-                   BlobDataStructure)
+                   get_stream_sequence_length, BlobDataStructure)
 from .logger import get_logger
 from .structures import DOTNET_CLR_HEADER, DOTNET_METADATA_HEADER, DOTNET_STREAM_HEADER, DOTNET_METADATA_STREAM_HEADER
 from .metadata_rows import get_metadata_row_class_for_table, METADATA_TABLE_ROW
@@ -388,17 +388,8 @@ class DotNetPEParser(PE):
                 f'parsing stream: {current_stream_header_name} rva: 0x{current_stream_rva:x} '
                 f'size: 0x{current_stream_size:x}')
 
-    def _get_metadata_table_row_size(self, table_name: str,
-                                     current_row_rva: int,
-                                     row_type: Type[METADATA_TABLE_ROW]) -> int:
-        result = self.parse_metadata_table_row_size(current_row_rva, row_type)
-
-        # Monkey patch: Add 2 bytes for samples with TypeDef and no Field table or MethodDef and no Param table
-        if (table_name == 'TypeDef' and 'Field' not in self.dotnet_metadata_stream_header.table_names) or \
-                (table_name == 'MethodDef' and 'Param' not in self.dotnet_metadata_stream_header.table_names):
-            result += 2
-
-        return result
+    def _get_metadata_table_row_size(self, current_row_rva: int, row_type: Type[METADATA_TABLE_ROW]) -> int:
+        return self.parse_metadata_table_row_size(current_row_rva, row_type)
 
     def _get_metadata_table_rva(self) -> None:
         # This method currently cannot be bound to fast load as the correct table order must be
@@ -414,7 +405,7 @@ class DotNetPEParser(PE):
             if row_type is None:
                 continue
 
-            table_row_size = self._get_metadata_table_row_size(table_name, current_row_rva, row_type)
+            table_row_size = self._get_metadata_table_row_size(current_row_rva, row_type)
 
             table_size = table_row_size * table_rows_num
             self.metadata_tables_rva[table_name] = current_row_rva
@@ -512,7 +503,7 @@ class DotNetPEParser(PE):
         if row_type is None:
             return None
 
-        table_row_size = self._get_metadata_table_row_size(table_name, current_row_rva, row_type)
+        table_row_size = self._get_metadata_table_row_size(current_row_rva, row_type)
 
         all_rows_data = self.get_data(current_row_rva, table_row_size * num_rows)
         for _ in range(num_rows):
@@ -643,31 +634,6 @@ class DotNetPEParser(PE):
             self.guid_stream_guids.append(current_guid_location)
             current_guid_rva += 0x10
 
-    @staticmethod
-    def _get_stream_sequence_length(length_field_buffer: bytes) -> Tuple[int, int]:
-        # String length explanation:
-        # https://www.ecma-international.org/wp-content/uploads/ECMA-335_6th_edition_june_2012.pdf
-        # II.24.2.4 #US and #Blob heaps (page 298 or 272)
-
-        # one byte of length
-        first_byte = length_field_buffer[0]
-        if (first_byte & 0x80) == 0:
-            return int(first_byte), 1
-
-        # 2 bytes of length
-        elif (first_byte & 0xC0) == 0x80:
-            length = struct.unpack('>H', length_field_buffer[:2])[0]
-            length &= 0x7FFF
-            return length, 2
-        # 4 bytes of length
-        elif (first_byte & 0xE0) == 0xC0:
-            length = struct.unpack('>I', length_field_buffer)[0]
-            length &= 0x3FFFFFF
-            return length, 4
-
-        # error
-        return 0, 1
-
     def parse_us_stream(self) -> None:
         # From: http://www.ntcore.com/files/dotnetformat.htm
         # US Array of unicode strings. The name stands for User Strings,
@@ -691,7 +657,7 @@ class DotNetPEParser(PE):
         while current_string_rva < stream.address + stream.size:
             # can be 1-4 bytes
             current_string_length_bytes = self.get_data(current_string_rva, length=4)
-            current_string_length, length_field_size = self._get_stream_sequence_length(current_string_length_bytes)
+            current_string_length, length_field_size = get_stream_sequence_length(current_string_length_bytes)
             if current_string_length == 0:
                 break
 
@@ -1250,7 +1216,7 @@ class DotNetPEParser(PE):
         while current_blob_rva < stream.address + stream.size:
             # can be 1-4 bytes
             current_blob_length_bytes = self.get_data(current_blob_rva, length=4)
-            current_blob_length, length_field_size = self._get_stream_sequence_length(current_blob_length_bytes)
+            current_blob_length, length_field_size = get_stream_sequence_length(current_blob_length_bytes)
 
             current_blob_size = current_blob_length + length_field_size
             current_blob_bytes = self.get_data(current_blob_rva, current_blob_size)

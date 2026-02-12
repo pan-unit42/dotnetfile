@@ -3,7 +3,7 @@ Part of dotnetfile
 
 Original author:        Bob Jung - Palo Alto Networks (2016)
 Modified/Expanded by:   Yaron Samuel - Palo Alto Networks (2021-2022),
-                        Dominik Reichel - Palo Alto Networks (2021-2025)
+                        Dominik Reichel - Palo Alto Networks (2021-2026)
 """
 
 import binascii
@@ -12,7 +12,7 @@ from math import log, floor
 from typing import Dict, Optional, Any
 
 from .logger import get_logger
-from .util import BinaryStructure, FileLocation
+from .util import BinaryStructure, FileLocation, get_stream_sequence_length
 from .constants import TABLE_ROW_VARIABLE_LENGTH_FIELDS
 
 
@@ -21,28 +21,32 @@ def get_blob_location_for_offset(pe, offset: int):
     This sort of just cheats and returns a DWORD for now since we haven't done the extra legwork in figuring out the
     lengths of every single variable
     """
-    # I'm just going to go with 4 bytes for now...
-    blob_location_size = 4
-
     blob_stream = pe.dotnet_stream_lookup.get(b'#Blob', None)
     if blob_stream is not None:
         blob_stream_rva = blob_stream.address - pe.address
         blob_location_rva = blob_stream_rva + offset
         blob_location_addr = blob_stream.address + offset
-        blob_location_bytes = pe.executable_bytes[blob_location_rva:blob_location_rva + blob_location_size]
 
         if offset < blob_stream.size:
+            blob_length_bytes = pe.executable_bytes[blob_location_rva:blob_location_rva + 4]
+            blob_length, length_field_size = get_stream_sequence_length(blob_length_bytes)
+
+            blob_location_size = blob_length + length_field_size
+            blob_location_bytes = pe.executable_bytes[blob_location_rva:blob_location_rva + blob_location_size]
             blob_location = FileLocation(blob_location_addr, blob_location_bytes, blob_location_size)
             blob_location.string_representation = binascii.hexlify(blob_location_bytes)
+
             return blob_location
 
     return None
 
 
 def get_guid_location_for_offset(pe, offset: int):
-    # I'm just going to go with 4 bytes for now...
-    guid_location_size = 4
-    guid_stream = pe.dotnet_stream_lookup.get(b'#GUID', None)
+    # GUIDs are always 16 bytes.
+    # Note: offset here is often a 1-based index in Metadata tables,
+    # but the caller seems to pass it as a byte offset.
+    guid_location_size = 16
+    guid_stream = pe.dotnet_stream_lookup.get(b'#GUID')
     if guid_stream is not None:
         guid_location_rva = guid_stream.address + offset
         guid_location_bytes = pe.get_data(guid_location_rva, guid_location_size)
@@ -126,16 +130,15 @@ class METADATA_TABLE_ROW(BinaryStructure):
         """
         Creates a reference to a row in another table
         """
-        if table_name not in self.pe.dotnet_metadata_stream_header.table_size_lookup:
-            self.logger.debug(f'Table: {table_name} not defined in .NET header')
-            return None
+        num_rows = self.pe.dotnet_metadata_stream_header.table_size_lookup.get(table_name)
+        if num_rows is None:
+            self.logger.debug(f"Table: {table_name} not defined in .NET header")
+            num_rows = 0
 
-        field_size = 2
-        struct_string = 'H'
-        num_rows = self.pe.dotnet_metadata_stream_header.table_size_lookup[table_name]
         if num_rows >= 65536:
-            field_size = 4
-            struct_string = 'I'
+            field_size, struct_string = 4, 'I'
+        else:
+            field_size, struct_string = 2, 'H'
 
         field_value = self.create_field_value(field_name, field_size, struct_string)
 
@@ -706,7 +709,7 @@ class IMPL_MAP_TABLE_ROW(METADATA_TABLE_ROW):
     28 - ImplMap Table
         Quote: "The ImplMap table holds information about unmanaged methods that can be reached from managed code, using
             PInvoke dispatch. Each row of the ImplMap table associates a row in the MethodDef table (MemberForwarded)
-            with the name of a routine (ImportName) in some unmanaged DLL (ImportScope).".
+            with the name of a routine (ImportName) in some unmanaged DLL (ImportScope)."
         This means all the unmanaged functions used by the assembly are listed here. It is documented in ECMA-335.
 
     Columns:
@@ -921,8 +924,8 @@ class EXPORTED_TYPE_TABLE_ROW(METADATA_TABLE_ROW):
     """
     39 - ExportedType Table
         Quote: "The ExportedType table holds a row for each type, defined within other modules of this Assembly, that is
-            exported out of this Assembly. In essence, it stores TypeDef row numbers of all types that are marked public in
-            other modules that this Assembly comprises.".
+            exported out of this Assembly. In essence, it stores TypeDef row numbers of all types that are marked public
+            in other modules that this Assembly comprises."
          It is documented in ECMA-335.
 
     Columns:
@@ -992,7 +995,7 @@ class GENERIC_PARAM_TABLE_ROW(METADATA_TABLE_ROW):
     42 - GenericParam Table
         Quote: "The GenericParam table stores the generic parameters used in generic type definitions and generic
             method definitions. These generic parameters can be constrained (i.e., generic arguments shall extend some
-            class and/or implement certain interfaces) or unconstrained.".
+            class and/or implement certain interfaces) or unconstrained."
         It is documented in ECMA-335.
 
     Columns:

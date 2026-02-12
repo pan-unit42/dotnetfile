@@ -6,7 +6,7 @@ long_description = (this_directory / "README.md").read_text()
 
 setup(
     name='dotnetfile',
-    version='0.2.9',
+    version='0.2.10',
     author='Bob Jung, Yaron Samuel, Dominik Reichel',
     description='Library to parse the CLR header of .NET assemblies',
     packages=find_packages(),

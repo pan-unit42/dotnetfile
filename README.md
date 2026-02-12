@@ -10,7 +10,7 @@ The aim of this project is to give malware analysts and threat hunters a tool to
 
 ## Installation
 
-`dotnetfile` requires Python >= 3.7 and [`pefile`](https://github.com/erocarrera/pefile).
+`dotnetfile` requires Python >= 3.7.
 
 ### PyPI
 
@@ -44,6 +44,8 @@ print(f'Number of streams: {dotnet_file.get_number_of_streams()}')
 
 You are invited to explore the example scripts: https://github.com/pan-unit42/dotnetfile/blob/main/examples/
 
+More about how to use this library can be found in the [documentation pages](https://pan-unit42.github.io/dotnetfile/get_started/usage/). 
+
 ## Documentation
 
 The full documentation can be found at https://pan-unit42.github.io/dotnetfile/
@@ -57,3 +59,9 @@ This project was started in 2016 with the development of the parser library for 
 - Dominik Reichel (parser and interface libraries) [@TheEnergyStory](https://twitter.com/TheEnergyStory)
 
 This project is a work in progress. If you find any issues or have any suggestions, please report them to the GitHub project page.
+
+## Credits
+
+Special thanks to all the contributors who have helped improve this project.
+
+`dotnetfile` is heavily based on the [`.NET specification`](https://www.ecma-international.org/wp-content/uploads/ECMA-335_6th_edition_june_2012.pdf).

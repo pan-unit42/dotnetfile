@@ -1,5 +1,5 @@
 """
-Author: Dominik Reichel - Palo Alto Networks (2022-2025)
+Author: Dominik Reichel - Palo Alto Networks (2022-2026)
 
 Display CLR header information of .NET assemblies.
 """
@@ -46,6 +46,7 @@ def process_file(file_path: str) -> None:
     for assembly_attribute, assembly_attribute_value in assembly_attributes_with_values.items():
         if assembly_attribute_value:
             print(f'\t\t{assembly_attribute}: {assembly_attribute_value}')
+    print()
 
     print('Anti analysis tricks')
     print(f'\t.NET data directory hidden in PE header: {dotnet_file.AntiMetadataAnalysis.is_dotnet_data_directory_hidden}')
