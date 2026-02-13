@@ -42,7 +42,7 @@ dotnet_file = DotNetPE(dotnet_file_path)
 print(f'Number of streams: {dotnet_file.get_number_of_streams()}')
 ```
 
-You are invited to explore the example scripts: https://github.com/pan-unit42/dotnetfile/blob/main/examples/
+You are invited to explore the example tools: https://github.com/pan-unit42/dotnetfile/blob/main/tools/
 
 More about how to use this library can be found in the [documentation pages](https://pan-unit42.github.io/dotnetfile/get_started/usage/). 
 
